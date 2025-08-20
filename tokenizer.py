@@ -16,19 +16,17 @@ class Tokenizer:
         self.merges = {}
     def _normalize(self,corpus):
         unicode_normalized = unicodedata.normalize("NFC",corpus)
-        return unicode_normalized.lower()
+        return unicode_normalized.lower().encode(encoding="utf-8")  
     
     def train(self):
         # Create initial state with all bytes from ascii table(256 total).
-        initial_state = [chr(i) for i in range(256)]
-        # Extend initial stat with new ids if it is not in initial_state.
-        initial_state.extend(c for c in set(self.corpus) if c not in initial_state)
+        initial_state = [bytes([i]) for i in range(256)]
         # Fills vocabulary with id to char from initial state
         self.vocab ={i: char for i,char in enumerate(initial_state)}
         # Fills an inverse vocab which is usefull to tokenize corpus into ids as bellow
         self.inverse_vocab = {char: i for i,char in enumerate(initial_state)}
         # Tokenizes the corpus into the correspondent ids.
-        tokenized_ids = [self.inverse_vocab[char] for char in self.corpus]
+        tokenized_ids = [i for i in self.corpus]
 
         # Now training process can start by iterating to find frequent pairs.
         for idx in range(len(self.vocab), self.vocab_size):
@@ -72,15 +70,24 @@ class Tokenizer:
                 replaced.append(current)
 
         return replaced
-
+    def encode(self,text):
+        normalized_text = self._normalize(text)
+        list_bytes = [i for i in normalized_text]
+        for pair, id in self.merges.items():
+            replaced_pairs = self.replace_pair(pair,list_bytes,id)
+            list_bytes = replaced_pairs
+        return list_bytes
+    
+    def decode(self,text):
+        raise NotimplementedError
 
 if __name__ == "__main__":
     corpus1 = "É Ó ś Sketch Engine is the ultimate tool to explore how language works. Its algorithms analyze authentic texts of billions of words (text corpora) to identify instantly what is typical in language and what is rare, unusual or emerging usage. It is also designed for text analysis or text mining applications."
     corpus = "aaabbb bbaaa basaba babaaba babba"
     print("Original:")
-    print(corpus)
+    print(corpus1)
     print("\n")
     print("Initial State:")
-    tokenizer = Tokenizer(corpus,1024)
-
-    print(tokenizer.train())
+    tokenizer = Tokenizer(corpus1,350)
+    print(tokenizer.encode("Alahu akbarrrrrrr"))
+    #print(tokenizer.train())
