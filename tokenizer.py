@@ -4,9 +4,12 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections import Counter,deque
+import json
+
 
 class Tokenizer:
     def __init__(self, corpus, vocab_size):
+        # TODO: CHECK IF VOCAB JSON AND MERGES EXISTS
         #Normalize corpus when instantiating class.
         self.corpus = self._normalize(corpus)
         # Create empty vocabulary.
@@ -21,10 +24,11 @@ class Tokenizer:
         unicode_normalized = unicodedata.normalize("NFC",corpus)
         # Returns the lowered version of the corpus
         # and encodes it into bytes
-        # order of operation matter here 
+        # order of operations matters here 
         return unicode_normalized.lower().encode(encoding="utf-8")  
     
     def train(self):
+        print("Starting tokenizer training...")
         # Create initial state with all bytes from ascii table(256 total).
         initial_state = [bytes([i]) for i in range(256)]
         # Fills vocabulary with id to char from initial state
@@ -35,6 +39,8 @@ class Tokenizer:
         tokenized_ids = [i for i in self.corpus]
 
         # Now training process can start by iterating to find frequent pairs.
+        # The idx(id to be assigned) starts from the end of the initial_state size(256)
+        # towards the defined vocab_size, so essentially it learns len(vocab_size) - len(initial_state) combinations.
         for idx in range(len(self.vocab), self.vocab_size):
             # I think the functions and operations bellow explains themselves.
             pair = self.find_pairs(tokenized_ids)
@@ -52,7 +58,8 @@ class Tokenizer:
             self.vocab[new_id] = merged_token
             # Adds the reverse of the above as well. 
             self.inverse_vocab[merged_token] = new_id
-        return self.vocab
+        
+        print("Tokenizer successfully trained!")
         
     # Helper function to find pairs given an tokenized list.
     def find_pairs(self, tokenized_list):
@@ -89,6 +96,7 @@ class Tokenizer:
 
         return replaced
     def encode(self,text):
+        # TODO: APPLY TESTS 
         # First it needs to normalize text 
         normalized_text = self._normalize(text)
 
@@ -102,16 +110,46 @@ class Tokenizer:
             list_bytes = replaced_pairs
         return list_bytes
     
-    def decode(self,text):
+    def decode(self,tokenized_ids):
+        decoded_bytes = [self.vocab[item] for item in tokenized_ids]
+        decoded_str = "".join([i.decode("UTF-8") for i in decoded_bytes])
+        return decoded_str
+
+    def save(self, merges_path, vocab_path):
+        # TODO: APPLY PATH CHECK 
+        # Json doesnt save bytes or sets, so we need to address that first
+        with open(merges_path, "w", encoding="utf-8") as f:
+            merges_list = [{"pair": list(pair), "id": id} for pair,id in self.merges.items()]
+            json.dump(merges_list, f)
+
+        with open(vocab_path, "w", encoding="utf-8") as f:
+            vocab_list = [{"id": id, "merged_token": [token for token in tokens]} for id, tokens in self.vocab.items()]
+            json.dump(vocab_list, f)
+
+    def load(self, merges_path, vocab_path):
+        # Loads the json from specified path.
+        # TODO: CHECK IF FILE PATH EXISTS
         
+        with open(merges_path, "r", encoding="utf-8") as f:
+            loaded_merges = json.load(f)
+            #self.merge = 
+
 
 if __name__ == "__main__":
     corpus1 = "É Ó ś Sketch Engine is the ultimate tool to explore how language works. Its algorithms analyze authentic texts of billions of words (text corpora) to identify instantly what is typical in language and what is rare, unusual or emerging usage. It is also designed for text analysis or text mining applications."
     corpus = "aaabbb bbaaa basaba babaaba babba"
     print("Original:")
-    print(corpus1)
-    print("\n")
-    print("Initial State:")
+    #print(corpus1)
+    #print("\n")
+    #print("Initial State:")
     tokenizer = Tokenizer(corpus1,350)
-    print(tokenizer.encode("Alahu akbarrrrrrr"))
+    tokenized_example = tokenizer.encode("Alahu akbarrrrrrr")
+    print("tokenized_example")
+    print(tokenized_example)
+    tokenizer.train()
     #print(tokenizer.train())
+    decoded_result = tokenizer.decode(tokenized_example)
+    print("decoded result:")
+    print(decoded_result)
+    tokenizer.save("data/merges.json", "data/vocabulary.json")
+    
