@@ -5,17 +5,20 @@ import re
 import unicodedata
 from collections import Counter,deque
 import json
+import os 
 
 
 class Tokenizer:
-    def __init__(self, corpus, vocab_size):
+    def __init__(self, corpus=None, vocab_size=None):
         # TODO: CHECK IF VOCAB JSON AND MERGES EXISTS
         #Normalize corpus when instantiating class.
-        self.corpus = self._normalize(corpus)
+        if corpus is not None:
+            self.corpus = self._normalize(corpus)
         # Create empty vocabulary.
         self.vocab = {}
         # Set vocabulary vocabulary size.
-        self.vocab_size = vocab_size
+        if vocab_size is not None:
+            self.vocab_size = vocab_size
         self.merges = {}
     def _normalize(self,corpus):
         # Normalize the bytes of the corpus by similarity.
@@ -116,24 +119,44 @@ class Tokenizer:
         return decoded_str
 
     def save(self, merges_path, vocab_path):
-        # TODO: APPLY PATH CHECK 
         # Json doesnt save bytes or sets, so we need to address that first
-        with open(merges_path, "w", encoding="utf-8") as f:
-            merges_list = [{"pair": list(pair), "id": id} for pair,id in self.merges.items()]
-            json.dump(merges_list, f)
+        if not os.path.exists(merges_path):
+            with open(merges_path, "w", encoding="utf-8") as f:
+                merges_list = [{"pair": list(pair), "id": id} for pair,id in self.merges.items()]
+                json.dump(merges_list, f)
+        else:
+            print("Specified merge path already exists, skipping...")
+        if not os.path.exits(vocab_path):
+            with open(vocab_path, "w", encoding="utf-8") as f:
+                vocab_list = [{"id": id, "merged_token": [token for token in tokens]} for id, tokens in self.vocab.items()]
+                json.dump(vocab_list, f)
+        else:
+            print("Specified vocab path already exists, skipping...")
 
-        with open(vocab_path, "w", encoding="utf-8") as f:
-            vocab_list = [{"id": id, "merged_token": [token for token in tokens]} for id, tokens in self.vocab.items()]
-            json.dump(vocab_list, f)
-
+        
     def load(self, merges_path, vocab_path):
         # Loads the json from specified path.
-        # TODO: CHECK IF FILE PATH EXISTS
         
-        with open(merges_path, "r", encoding="utf-8") as f:
-            loaded_merges = json.load(f)
-            #self.merge = 
-
+        if os.path.exists(merges_path) and os.path.exists(vocab_path):
+            with open(merges_path, "r", encoding="utf-8") as f:
+                loaded_merges = json.load(f)
+                for item in loaded_merges:
+                    pair_list = item["pair"]
+                    item_id = item["id"]
+                    self.merges[tuple(pair_list)] = int(item_id)
+            
+        
+            with open(vocab_path, "r", encoding="utf-8") as f:
+                loaded_merges = json.load(f)
+                for item in loaded_merges:
+                    item_id = item["id"]
+                    merged_t_id = item["merged_token"]
+                    self.vocab[item_id] = bytearray(merged_t_token)
+                    self.inverse_vocab[bytearray(merged_t_token)] = item_id
+        else:
+            print("Provided path(s) doesnt exists.")
+    
+            
 
 if __name__ == "__main__":
     corpus1 = "É Ó ś Sketch Engine is the ultimate tool to explore how language works. Its algorithms analyze authentic texts of billions of words (text corpora) to identify instantly what is typical in language and what is rare, unusual or emerging usage. It is also designed for text analysis or text mining applications."
