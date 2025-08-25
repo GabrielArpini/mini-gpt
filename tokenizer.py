@@ -6,11 +6,11 @@ import unicodedata
 from collections import Counter,deque
 import json
 import os 
+from typing import List, Tuple, Optional
 
 
 class Tokenizer:
-    def __init__(self, corpus=None, vocab_size=None):
-        # TODO: CHECK IF VOCAB JSON AND MERGES EXISTS
+    def __init__(self, corpus=None, vocab_size=None) -> None:
         #Normalize corpus when instantiating class.
         if corpus is not None:
             self.corpus = self._normalize(corpus)
@@ -20,7 +20,7 @@ class Tokenizer:
         if vocab_size is not None:
             self.vocab_size = vocab_size
         self.merges = {}
-    def _normalize(self,corpus):
+    def _normalize(self,corpus: str) -> bytes:   
         # Normalize the bytes of the corpus by similarity.
         # For example:
         # e = é
@@ -30,7 +30,7 @@ class Tokenizer:
         # order of operations matters here 
         return unicode_normalized.lower().encode(encoding="utf-8")  
     
-    def train(self):
+    def train(self) -> None:
         print("Starting tokenizer training...")
         # Create initial state with all bytes from ascii table(256 total).
         initial_state = [bytes([i]) for i in range(256)]
@@ -65,7 +65,7 @@ class Tokenizer:
         print("Tokenizer successfully trained!")
         
     # Helper function to find pairs given an tokenized list.
-    def find_pairs(self, tokenized_list):
+    def find_pairs(self, tokenized_list: List): -> Optional[Tuple[int, int]]
         # Uses Counter to get frequency of ids by comparing pairs.
         id_frequency = Counter(zip(tokenized_list,tokenized_list[1:]))
 
@@ -74,7 +74,7 @@ class Tokenizer:
         # Returns the pair with most frequency. 
         return max(id_frequency.items(), key=lambda x: x[1])[0]
     
-    def replace_pair(self,pair,tokenized_list,new_id):
+    def replace_pair(self, pair: tuple, tokenized_list: List, new_id: int) -> List:
         """
         The idea here is to replace the portions with the pair
         of ids with a new id which represents the combination of both.
@@ -98,7 +98,7 @@ class Tokenizer:
                 replaced.append(current)
 
         return replaced
-    def encode(self,text):
+    def encode(self,text: str) -> List[int]:
         # TODO: APPLY TESTS 
         # First it needs to normalize text 
         normalized_text = self._normalize(text)
@@ -113,12 +113,12 @@ class Tokenizer:
             list_bytes = replaced_pairs
         return list_bytes
     
-    def decode(self,tokenized_ids):
+    def decode(self,tokenized_ids: List) -> str:
         decoded_bytes = [self.vocab[item] for item in tokenized_ids]
         decoded_str = "".join([i.decode("UTF-8") for i in decoded_bytes])
         return decoded_str
 
-    def save(self, merges_path, vocab_path):
+    def save(self, merges_path: str, vocab_path: str) -> None:
         # Json doesnt save bytes or sets, so we need to address that first
         if not os.path.exists(merges_path):
             with open(merges_path, "w", encoding="utf-8") as f:
@@ -134,7 +134,7 @@ class Tokenizer:
             print("Specified vocab path already exists, skipping...")
 
         
-    def load(self, merges_path, vocab_path):
+    def load(self, merges_path:str, vocab_path: str) -> None:
         # Loads the json from specified path.
         
         if os.path.exists(merges_path) and os.path.exists(vocab_path):
