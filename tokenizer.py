@@ -7,6 +7,8 @@ from collections import Counter,deque
 import json
 import os 
 from typing import List, Tuple, Optional
+import regex as re
+import time 
 
 
 class Tokenizer:
@@ -20,15 +22,27 @@ class Tokenizer:
         if vocab_size is not None:
             self.vocab_size = vocab_size
         self.merges = {}
-    def _normalize(self,corpus: str) -> bytes:   
+    def _normalize(self,corpus: str) -> List[int]:   
+        """
+        Normalizes the input corpus and returns a list of byte integers. 
+        """
         # Normalize the bytes of the corpus by similarity.
         # For example:
         # e = é
-        unicode_normalized = unicodedata.normalize("NFC",corpus)
-        # Returns the lowered version of the corpus
-        # and encodes it into bytes
-        # order of operations matters here 
-        return unicode_normalized.lower().encode(encoding="utf-8")  
+        unicode_normalized = unicodedata.normalize("NFC",corpus).lower()
+
+        #regex pattern from GPT-2
+        pattern = re.compile(
+                r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}++| ?\p{N}++| ?[^\s\p{L}\p{N}]++|\s++$|\s+(?!\S)|\s"""
+        )
+        # Applies the pattern into the corpus
+        # returns: ["I","love","cats"]
+        token_list = re.findall(pattern,unicode_normalized)
+        # Joins the tokens into a continuous byte object 
+        joined_bytes = b''.join(t.encode(encoding="utf-8",errors='replace') for t in token_list)
+
+        # Unpack the byte object into an list of integers
+        return list(joined_bytes)
     
     def train(self) -> None:
         print("Starting tokenizer training...")
@@ -36,7 +50,7 @@ class Tokenizer:
         initial_state = [bytes([i]) for i in range(256)]
         # Fills vocabulary with id to char from initial state
         self.vocab ={i: char for i,char in enumerate(initial_state)}
-        # Fills an inverse vocab which is usefull to tokenize corpus into ids as bellow
+        # Fills an inverse vocab which is useful to tokenize corpus into ids as bellow
         self.inverse_vocab = {char: i for i,char in enumerate(initial_state)}
         # Tokenizes the corpus into the correspondent ids.
         tokenized_ids = [i for i in self.corpus]
@@ -63,9 +77,65 @@ class Tokenizer:
             self.inverse_vocab[merged_token] = new_id
         
         print("Tokenizer successfully trained!")
+    
+
+    def train_from_iterator(self, iterator, verbose=False):
+        #TODO: implement verbose prints and fix time error. 
+        print("Starting training...")
+        start = time.time()
+        initial_state = [bytes([i]) for i in range(256)]
+        self.vocab = {i: char for i,char in enumerate(initial_state)}
+        self.inverse_vocab = {char: i for i, char in enumerate(initial_state)}
         
+        for i in range(len(initial_state), self.vocab_size):
+            _count = Counter()
+            for chunk in iterator:
+                if not isinstance(chunk, dict) or 'text' not in chunk:
+                    raise ValueError("Iterator must yield dictionaries with a 'text' key")
+                chunk = chunk['text']
+                chunk_normalized = self._normalize(chunk)
+                # Updates list of bytes with merges 
+                for pair, id in self.merges.items():
+                    if pair and id:
+                        # Use replce_pair to replace the pairs from pairs in merges dict 
+                        replaced_pairs = self.replace_pair(pair,chunk_normalized,id)
+                        # Updates list_bytes so next iteration uses an updated version.
+                        chunk_normalized = replaced_pairs
+                
+                # Counts the frequency of each pair 
+                _count.update(zip(chunk_normalized,chunk_normalized[1:]))
+                
+            most_frequent_pair = _count.most_common()[0][0]
+            self.merges[most_frequent_pair] = i 
+            item_1 = self.vocab[most_frequent_pair[0]]
+            item_2 = self.vocab[most_frequent_pair[1]]
+        
+            merged_token = item_1 + item_2
+
+            self.vocab[i] = merged_token
+            self.inverse_vocab[merged_token] = i 
+
+            total_merges = self.vocab_size - 256
+            merges_done = i - 256 + 1 
+            elapsed_time = time.time()-start
+            avg_time_per_merge = elapsed_time / merges_done 
+            print(f"{merges_done} merges done in {elapsed_time:.2f}s. Remaining: {total_merges - merges_done}. Time prediction: {avg_time_per_merge*(total_merges-merges_done)}")
+            
+        end = time.time()
+        print(f"Training completed in {end-start} seconds.")
+
+            
+
+                
+
+                
+                
+                
+
+
+
     # Helper function to find pairs given an tokenized list.
-    def find_pairs(self, tokenized_list: List): -> Optional[Tuple[int, int]]
+    def find_pairs(self, tokenized_list: List) -> Optional[Tuple[int, int]]:
         # Uses Counter to get frequency of ids by comparing pairs.
         id_frequency = Counter(zip(tokenized_list,tokenized_list[1:]))
 
@@ -115,26 +185,29 @@ class Tokenizer:
     
     def decode(self,tokenized_ids: List) -> str:
         decoded_bytes = [self.vocab[item] for item in tokenized_ids]
-        decoded_str = "".join([i.decode("UTF-8") for i in decoded_bytes])
+        decoded_str = "".join([i.decode("UTF-8",errors='replace') for i in decoded_bytes])
         return decoded_str
 
     def save(self, merges_path: str, vocab_path: str) -> None:
         # Json doesnt save bytes or sets, so we need to address that first
         if not os.path.exists(merges_path):
             with open(merges_path, "w", encoding="utf-8") as f:
+                print("Saving merges state...")
                 merges_list = [{"pair": list(pair), "id": id} for pair,id in self.merges.items()]
                 json.dump(merges_list, f)
         else:
             print("Specified merge path already exists, skipping...")
-        if not os.path.exits(vocab_path):
+        if not os.path.exists(vocab_path):
             with open(vocab_path, "w", encoding="utf-8") as f:
+                print("Saving vocabulary state...")
                 vocab_list = [{"id": id, "merged_token": [token for token in tokens]} for id, tokens in self.vocab.items()]
                 json.dump(vocab_list, f)
         else:
             print("Specified vocab path already exists, skipping...")
-
+        
         
     def load(self, merges_path:str, vocab_path: str) -> None:
+        #TODO: Handle merges_path and vocab_path existence. 
         # Loads the json from specified path.
         
         if os.path.exists(merges_path) and os.path.exists(vocab_path):
@@ -151,28 +224,40 @@ class Tokenizer:
                 for item in loaded_merges:
                     item_id = item["id"]
                     merged_t_id = item["merged_token"]
-                    self.vocab[item_id] = bytearray(merged_t_token)
-                    self.inverse_vocab[bytearray(merged_t_token)] = item_id
+                    self.vocab[item_id] = bytes(merged_t_id)
+                    self.inverse_vocab[bytes(merged_t_id)] = item_id
         else:
             print("Provided path(s) doesnt exists.")
     
             
 
 if __name__ == "__main__":
-    corpus1 = "É Ó ś Sketch Engine is the ultimate tool to explore how language works. Its algorithms analyze authentic texts of billions of words (text corpora) to identify instantly what is typical in language and what is rare, unusual or emerging usage. It is also designed for text analysis or text mining applications."
-    corpus = "aaabbb bbaaa basaba babaaba babba"
-    print("Original:")
-    #print(corpus1)
-    #print("\n")
-    #print("Initial State:")
-    tokenizer = Tokenizer(corpus1,350)
-    tokenized_example = tokenizer.encode("Alahu akbarrrrrrr")
-    print("tokenized_example")
-    print(tokenized_example)
-    tokenizer.train()
-    #print(tokenizer.train())
-    decoded_result = tokenizer.decode(tokenized_example)
-    print("decoded result:")
-    print(decoded_result)
-    tokenizer.save("data/merges.json", "data/vocabulary.json")
+    # Corpus to train the tokenizer
+    training_corpus = "Quantum decoherence explains why a system interacting with an environment transitions from being a pure state, exhibiting superpositions, to a mixed state, an incoherent combination of classical alternatives.[14] This transition is fundamentally reversible, as the combined state of system and environment is still pure, but for all practical purposes irreversible in the same sense as in the second law of thermodynamics: the environment is a very large and complex quantum system, and it is not feasible to reverse their interaction. Decoherence is thus very important for explaining the classical limit of quantum mechanics, but cannot explain wave function collapse, as all classical alternatives are still present in the mixed state, and wave function collapse selects only one of them."
     
+    # Text we want to encode and then decode
+    text_to_process = "Von Neumann's mathematical analysis of the structure of self-replication preceded the discovery of the structure of DNA."
+    
+    tokenizer = Tokenizer(corpus=training_corpus, vocab_size=350)
+    tokenizer.train()
+    print("-" * 50)
+    
+    print(f"Encoding the text: '{text_to_process}'")
+    tokenized_ids = tokenizer.encode(text_to_process)
+    print("Encoded Token IDs:")
+    print(tokenized_ids)
+    print(f"(Length: {len(tokenized_ids)} tokens)")
+    print("-" * 50)
+
+    print("Decoding the token IDs to text...")
+    decoded_text = tokenizer.decode(tokenized_ids)
+    print("Decoded Result:")
+    print(decoded_text)
+    print("-" * 50)
+
+   
+    tokenizer.save("data/merges.json", "data/vocabulary.json")
+    print("\n" + "-" * 50)
+
+
+
