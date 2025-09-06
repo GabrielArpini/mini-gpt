@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn 
-
+import matplotlib.pyplot as plt 
 
 class RoPE(nn.Module):
     def __init__(self,d_model, max_seq_len, base=10_000):
@@ -26,7 +26,11 @@ class RoPE(nn.Module):
         self.sin_angles = torch.sin(angle_grid)
         self.cos_angles = torch.cos(angle_grid)
 
-        
+    @staticmethod
+    def plot(x):
+        plt.plot(x)
+        plt.show()
+
 
     def forward(self,x):
         """
