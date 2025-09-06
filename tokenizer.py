@@ -18,6 +18,7 @@ class Tokenizer:
             self.corpus = self._normalize(corpus)
         # Create empty vocabulary.
         self.vocab = {}
+        self.inverse_vocab = {}
         # Set vocabulary vocabulary size.
         if vocab_size is not None:
             self.vocab_size = vocab_size
