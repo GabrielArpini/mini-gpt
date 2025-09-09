@@ -6,5 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "datasets>=4.0.0",
+    "matplotlib>=3.10.6",
     "regex>=2025.9.1",
+    "torch>=2.8.0",
 ]

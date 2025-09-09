@@ -3,10 +3,16 @@ import torch.nn as nn
 import matplotlib.pyplot as plt 
 
 class RoPE(nn.Module):
-    def __init__(self,d_model, max_seq_len, base=10_000):
+    def __init__(self,d_model: int, max_seq_len: int, base: int =10_000, device: str ='cpu') -> None:
         """
-        d_model is a hyperparameter to define the size of vector space for each token and must be even.
-        max_seq_len is a limit to memory usage, which defines the range of positional encodings RoPE computes.
+        Initializes the variables and computes the sin and cos matricies.
+
+        Args:
+
+        d_model: A hyperparameter to define the size of vector space for each token and must be even.
+        max_seq_len: A limit to memory usage, which defines the range of positional encodings RoPE computes.
+        base: The base to compute theta.
+
         """
         super(RoPE,self).__init__()
         self.d_model = d_model
@@ -23,21 +29,38 @@ class RoPE(nn.Module):
 
         angle_grid = pos_indices_vec * theta_i
 
-        self.sin_angles = torch.sin(angle_grid)
-        self.cos_angles = torch.cos(angle_grid)
+        self.sin_angles = torch.sin(angle_grid).to(device)
+        self.cos_angles = torch.cos(angle_grid).to(device)
 
     @staticmethod
-    def plot(x):
-        plt.plot(x)
+    def plot(sin_angles, cos_angles, dim_idx=0, title="RoPE Sin/Cos Values"):
+        plt.plot(sin_angles[:, dim_idx], label="sin")
+        plt.plot(cos_angles[:, dim_idx], label="cos")
+        plt.xlabel("Position")
+        plt.ylabel(f"Value (Dimension {dim_idx})")
+        plt.title(title)
+        plt.legend()
         plt.show()
+
 
 
     def forward(self,x):
         """
-        x: shape(batch_size,seq_len,d_model)
+        Applies rotary positional embeddings to the input tensor.
+
+        Args:
+        x:  Input tensor of shape (batch_size, seq_len, d_model), where
+            batch_size is the number of sequences, seq_len is the sequence length,
+            and d_model is the embedding dimension.
+
+        Returns:
+            torch.Tensor: Rotated embeddings with the same shape as the input.
         """
-        
+
         batch_size,seq_len,_ = x.shape 
+        if seq_len > self.max_seq_len:
+            raise ValueError(f"Input sequence length {seq_len} exceeds max_seq_len {self.max_seq_len}")
+
         # Need to extract the even and odd dimensions from d_model.
         x_even = x[:,:,0::2]
         x_odd = x[:,:,1::2]
