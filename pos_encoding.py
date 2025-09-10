@@ -23,7 +23,7 @@ class RoPE(nn.Module):
         
         pos_indices_vec = torch.arange(max_seq_len).unsqueeze(1) # shape [max_seq_len,1]
 
-        d_dimensions_space = torch.arange(0, d_model , 2) # shape [d_model // 2],d even numbers. Since it jumos 2 in 2 the shape is d//2
+        d_dimensions_space = torch.arange(0, d_model , 2) # shape [d_model // 2],d even numbers. Since it jumps 2 in 2 the shape is d//2
 
         theta_i = base**(-d_dimensions_space/d_model) # shape [d_model // 2]
 
