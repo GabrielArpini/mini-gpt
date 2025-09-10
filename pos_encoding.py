@@ -32,18 +32,6 @@ class RoPE(nn.Module):
         self.sin_angles = torch.sin(angle_grid).to(device)
         self.cos_angles = torch.cos(angle_grid).to(device)
 
-    @staticmethod
-    def plot(sin_angles, cos_angles, dim_idx=0, title="RoPE Sin/Cos Values"):
-        plt.plot(sin_angles[:, dim_idx], label="sin")
-        plt.plot(cos_angles[:, dim_idx], label="cos")
-        plt.xlabel("Position")
-        plt.ylabel(f"Value (Dimension {dim_idx})")
-        plt.title(title)
-        plt.legend()
-        plt.show()
-
-
-
     def forward(self,x):
         """
         Applies rotary positional embeddings to the input tensor.
@@ -84,7 +72,15 @@ class RoPE(nn.Module):
         return x
 
 
-
+    @staticmethod
+    def plot(sin_angles, cos_angles, dim_idx=0, title="RoPE Sin/Cos Values"):
+        plt.plot(sin_angles[:, dim_idx], label="sin")
+        plt.plot(cos_angles[:, dim_idx], label="cos")
+        plt.xlabel("Position")
+        plt.ylabel(f"Value (Dimension {dim_idx})")
+        plt.title(title)
+        plt.legend()
+        plt.show()
             
 
         
