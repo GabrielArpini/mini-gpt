@@ -3,7 +3,7 @@ import torch.nn as nn
 import matplotlib.pyplot as plt 
 
 class RoPE(nn.Module):
-    def __init__(self,d_model: int, max_seq_len: int, base: int =10_000, device: str ='cpu') -> None:
+    def __init__(self,d_model: int, max_seq_len: int, base: int =10_000) -> None:
         """
         Initializes the variables and computes the sin and cos matricies.
 
@@ -29,8 +29,8 @@ class RoPE(nn.Module):
 
         angle_grid = pos_indices_vec * theta_i
 
-        self.sin_angles = torch.sin(angle_grid).to(device)
-        self.cos_angles = torch.cos(angle_grid).to(device)
+        self.sin_angles = torch.sin(angle_grid)
+        self.cos_angles = torch.cos(angle_grid)
 
     def forward(self,x):
         """
