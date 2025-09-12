@@ -43,16 +43,15 @@ class MultiHeadAttention(nn.Module):
         Args:
         x: Tensor of the tokenized list of shape (batch_size,seq_len, d_model)
         """
-
         # Apply linear projections of q,k,v into the input tensor
         q_w = self.q_proj(x)
         k_w = self.k_proj(x)
         v_w = self.v_proj(x)
-        
+
         # Embed positons into q,k  
         q_pos_encoded = self.rope(q_w)
         k_pos_encoded = self.rope(k_w)
-       
+        
         # Split q,k,v d_model into shape:
         # (batch_size,seq_len, num_heads, head_dim)
         q_split = q_pos_encoded.reshape((q_pos_encoded.shape[0],q_pos_encoded.shape[1],self.h,self.head_dim))
@@ -65,10 +64,8 @@ class MultiHeadAttention(nn.Module):
         k_split = k_split.transpose(1,2)
         v_split = v_split.transpose(1,2)
 
-
         # Since shape is 4D and transpose is 2D, we need to specify which dimensions to transpose
         k_T = k_split.transpose(-2,-1)
-
 
         # Scaled Dot-Product Attention 
         product = torch.matmul(q_split,k_T)
