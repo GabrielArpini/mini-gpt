@@ -3,6 +3,9 @@ from __future__ import annotations
 import torch 
 import torch.nn as nn 
 from pos_encoding import RoPE
+
+device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
+
 class MultiHeadAttention(nn.Module):
     """
     Computes attention using q,k,v (query,key,value) in a multi head 
@@ -34,7 +37,7 @@ class MultiHeadAttention(nn.Module):
         self.w_0 = nn.Linear(d_model,d_model) # Output after the whole process. 
         
         # Instantiate RoPE 
-        self.rope = RoPE(d_model=self.d_model,max_seq_len=max_seq_len)
+        self.rope = RoPE(d_model=self.d_model,max_seq_len=max_seq_len).to(device)
 
         
         
@@ -54,9 +57,10 @@ class MultiHeadAttention(nn.Module):
         
         # Split q,k,v d_model into shape:
         # (batch_size,seq_len, num_heads, head_dim)
-        q_split = q_pos_encoded.reshape((q_pos_encoded.shape[0],q_pos_encoded.shape[1],self.h,self.head_dim))
-        k_split = k_pos_encoded.reshape((k_pos_encoded.shape[0],k_pos_encoded.shape[1],self.h,self.head_dim))
-        v_split = v_w.reshape((v_w.shape[0],v_w.shape[1],self.h,self.head_dim))
+        batch_size, seq_len, _ = x.shape
+        q_split = q_pos_encoded.reshape((batch_size,seq_len,self.h,self.head_dim))
+        k_split = k_pos_encoded.reshape((batch_size,seq_len,self.h,self.head_dim))
+        v_split = v_w.reshape((batch_size,seq_len,self.h,self.head_dim))
         
         # For compute efficiency, we are going to transpose h dimensions earlier
         # for parallelization
@@ -70,12 +74,20 @@ class MultiHeadAttention(nn.Module):
         # Scaled Dot-Product Attention 
         product = torch.matmul(q_split,k_T)
         scaled_product = product / torch.sqrt(torch.tensor(self.head_dim,device=x.device))
+
+        # Masked self-attention
+        
+        mask = torch.tril(torch.ones((seq_len, seq_len), device=x.device))
+        mask = mask.view(1, 1, seq_len, seq_len).expand(batch_size, self.h, seq_len, seq_len)
+        mask = mask.masked_fill(mask == 0, float('-inf'))
+        scaled_product = scaled_product + mask
+    
         softmax_result = nn.functional.softmax(scaled_product,dim=-1)
         softmax_result = self.dropout(softmax_result)
         attention_qkv = torch.matmul(softmax_result,v_split)
 
         # Concatenate the last two dimensions back to d_model 
-        concat_result = attention_qkv.transpose(2,1)
+        concat_result = attention_qkv.transpose(1,2)
         concat_result = concat_result.reshape((concat_result.shape[0],concat_result.shape[1],concat_result.shape[2]*concat_result.shape[3]))
         
         # Pass concat result into final projection. 

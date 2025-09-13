@@ -7,11 +7,12 @@ from MultiHeadAttention import MultiHeadAttention
 
 import torch 
 torch.manual_seed(42)
+device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
 
 def main():
     merges_path = 'data/merges.json'
     vocab_path = 'data/vocab.json'
-    tokenizer = Tokenizer(vocab_size=257)
+    tokenizer = Tokenizer(vocab_size=300)
     if not os.path.exists(merges_path) and not os.path.exists(vocab_path):
         iterator = DatasetIterator()
         tokenizer.train_from_iterator(iterator)
@@ -20,6 +21,7 @@ def main():
     if not tokenizer.merges or not tokenizer.vocab:
         tokenizer.load(merges_path, vocab_path)
 
+    print(len(tokenizer.vocab))
     print("Original text:")
     random_text = "In Brazil, Feynman was impressed with samba music, and learned to play the frigideira,[123] a metal percussion instrument based on a frying pan.[124] He was an enthusiastic amateur player of bongo and conga drums and often played them in the pit orchestra in musicals.[125][126] He spent time in Rio with his friend Bohm, but Bohm could not convince Feynman to investigate Bohm's ideas on physics."
     print(random_text)
@@ -57,7 +59,7 @@ def main():
     input_tensor = embedding(input_ids)  # Shape: (batch_size, seq_len, d_model)
 
     # Instantiate the RoPE module
-    rope = RoPE(d_model=d_model, max_seq_len=max_seq_len)
+    rope = RoPE(d_model=d_model, max_seq_len=max_seq_len).to(device)
 
     # Apply positional encoding
     output_tensor = rope(input_tensor)
