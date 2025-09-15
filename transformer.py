@@ -4,12 +4,13 @@ import torch
 import torch.nn as nn 
 from MultiHeadAttention import MultiHeadAttention
 
-class Transformer:
+
+
+
+class DecodeBlock:
     def __init__(self, dropout: float=0.0):
-        super(Transformer,self).__init__()
-        self.mha = MultiHeadAttention(*params)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.sl1 = 
+        super(DecodeBlock,self).__init__()
+        self.mha = MultiHeadAttention(*params) 
 
     def _sublayer1(self,x):
         norm = nn.LayerNorm(d_model)
@@ -27,3 +28,9 @@ class Transformer:
             nn.Linear(4*d_model, d_model)
         )
         return out(x)
+
+    def forward(self,x):
+        x = self._sublayer1(x)
+        x = self._sublayer2(x)
+
+

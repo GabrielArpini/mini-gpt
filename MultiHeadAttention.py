@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn 
 from pos_encoding import RoPE
 
-device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
 
 class MultiHeadAttention(nn.Module):
     """
@@ -12,7 +11,7 @@ class MultiHeadAttention(nn.Module):
     fashion by splitting the input into multiple heads.
 
     """
-    def __init__(self, d_model:int, h: int, max_seq_len: int, dropout: float = 0.0) -> None:
+    def __init__(self, d_model:int, h: int, max_seq_len: int, is_mask: bool = True, dropout: float = 0.0) -> None:
         """
         Args:
         d_model (int): The embedding dimension.
@@ -29,6 +28,7 @@ class MultiHeadAttention(nn.Module):
         self.head_dim = d_model // h 
         self.dropout = nn.Dropout(dropout)
         self.max_seq_len = max_seq_len
+        self.is_mask = is_mask
 
         # q,k,v are represented with linear projections
         self.q_proj = nn.Linear(d_model,d_model)
@@ -37,7 +37,7 @@ class MultiHeadAttention(nn.Module):
         self.w_0 = nn.Linear(d_model,d_model) # Output after the whole process. 
         
         # Instantiate RoPE 
-        self.rope = RoPE(d_model=self.d_model,max_seq_len=max_seq_len).to(device)
+        self.rope = RoPE(d_model=self.d_model,max_seq_len=max_seq_len)
 
         
         
@@ -76,11 +76,11 @@ class MultiHeadAttention(nn.Module):
         scaled_product = product / torch.sqrt(torch.tensor(self.head_dim,device=x.device))
 
         # Masked self-attention
-        
-        mask = torch.tril(torch.ones((seq_len, seq_len), device=x.device))
-        mask = mask.view(1, 1, seq_len, seq_len).expand(batch_size, self.h, seq_len, seq_len)
-        mask = mask.masked_fill(mask == 0, float('-inf'))
-        scaled_product = scaled_product + mask
+        if self.is_mask:
+            mask = torch.tril(torch.ones((seq_len, seq_len), device=x.device))
+            mask = mask.view(1, 1, seq_len, seq_len).expand(batch_size, self.h, seq_len, seq_len)
+            mask = mask.masked_fill(mask == 0, float('-inf'))
+            scaled_product = scaled_product + mask
     
         softmax_result = nn.functional.softmax(scaled_product,dim=-1)
         softmax_result = self.dropout(softmax_result)
