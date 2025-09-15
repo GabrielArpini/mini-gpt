@@ -51,10 +51,10 @@ def main():
 
     # Create an embedding layer to convert token IDs to embeddings
     vocab_size = tokenizer.vocab_size
-    embedding = torch.nn.Embedding(vocab_size, d_model)
+    embedding = torch.nn.Embedding(vocab_size, d_model).to(device)
     
     # Convert encoded text to tensor and repeat for batch_size
-    input_ids = torch.tensor(encoded_text, dtype=torch.long).unsqueeze(0)  # Shape: (1, seq_len)
+    input_ids = torch.tensor(encoded_text, dtype=torch.long).unsqueeze(0).to(device)  # Shape: (1, seq_len)
     input_ids = input_ids.repeat(batch_size, 1)  # Shape: (batch_size, seq_len)
     input_tensor = embedding(input_ids)  # Shape: (batch_size, seq_len, d_model)
 
@@ -77,10 +77,8 @@ def main():
 
     # Test MultiHeadAttention
     print("\nTesting MultiHeadAttention:")
-    mha = MultiHeadAttention(d_model=d_model, h=num_heads, dropout=dropout, max_seq_len=max_seq_len)
+    mha = MultiHeadAttention(d_model=d_model, h=num_heads, dropout=dropout, max_seq_len=max_seq_len).to(device)
     
-    
-    mha = mha.to(device)
     input_tensor = input_tensor.to(device)
     
     # Forward pass through MultiHeadAttention
