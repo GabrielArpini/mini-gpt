@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn 
 import matplotlib.pyplot as plt 
 
+device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
+
 class RoPE(nn.Module):
     def __init__(self,d_model: int, max_seq_len: int, base: int =10_000) -> None:
         """
@@ -50,14 +52,14 @@ class RoPE(nn.Module):
             raise ValueError(f"Input sequence length {seq_len} exceeds max_seq_len {self.max_seq_len}")
 
         # Need to extract the even and odd dimensions from d_model.
-        x_even = x[:,:,0::2]
-        x_odd = x[:,:,1::2]
+        x_even = x[:,:,0::2].to(device)
+        x_odd = x[:,:,1::2].to(device)
 
         # Angle grid was made with max_seq_len size, so we need to account that before
         # Since sin and cos have shape (seq_len, d_model // 2)
         # and x have batch_size, we need to unsqueeze sin and cos 
-        sin_reduced = self.sin_angles[:seq_len,:].unsqueeze(0)
-        cos_reduced = self.cos_angles[:seq_len,:].unsqueeze(0)
+        sin_reduced = self.sin_angles[:seq_len,:].unsqueeze(0).to(device)
+        cos_reduced = self.cos_angles[:seq_len,:].unsqueeze(0).to(device)
 
         # Apply rotations
         x_even_rotated = x_even*cos_reduced - x_odd*sin_reduced
