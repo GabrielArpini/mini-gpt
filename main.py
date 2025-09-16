@@ -78,15 +78,14 @@ def main():
     # Test MultiHeadAttention
     print("\nTesting MultiHeadAttention:")
     mha = MultiHeadAttention(d_model=d_model, h=num_heads, dropout=dropout, max_seq_len=max_seq_len).to(device)
-    
+
     input_tensor = input_tensor.to(device)
     
     # Forward pass through MultiHeadAttention
     attention_output = mha(input_tensor)
-    
     # Validate output shape
     print(f"MHA Input shape: {input_tensor.shape}")
-    print(f"MHA Output shape: {attention_output.shape}")
+    print(f"MHA masked Output shape: {attention_output.shape}")
     assert attention_output.shape == input_tensor.shape, "MHA output shape should match input shape"
     
     # Print a sample of the output for inspection
