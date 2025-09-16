@@ -4,10 +4,12 @@ from tokenizer import Tokenizer
 import os 
 from pos_encoding import RoPE
 from MultiHeadAttention import MultiHeadAttention
+from transformer import Transformer, TransformerBlock
+
 
 import torch 
 torch.manual_seed(42)
-device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def main():
     merges_path = 'data/merges.json'
@@ -35,7 +37,7 @@ def main():
     print("Decoded text")
     print(tokenizer.decode(encoded_text))
 
-
+    
 
     # Test positional posisitional encoding 
     # Need shape (batch, seq_len, d_model)
@@ -48,7 +50,7 @@ def main():
     max_seq_len = 400
     num_heads = 8
     dropout = 0.1
-
+    N = 8
     # Create an embedding layer to convert token IDs to embeddings
     vocab_size = tokenizer.vocab_size
     embedding = torch.nn.Embedding(vocab_size, d_model).to(device)
@@ -72,8 +74,10 @@ def main():
     # Visualize RoPE angles
     cos_angles = rope.cos_angles[:5, :].numpy()
     sin_angles = rope.sin_angles[:5, :].numpy()
-    print("\nVisualizing RoPE angles for first 5 positions:")
-    rope.plot(cos_angles, sin_angles)  # Plot sine and cosine angles
+    
+    # Uncomment to see plot
+    #print("\nVisualizing RoPE angles for first 5 positions:")
+    #rope.plot(cos_angles, sin_angles)  # Plot sine and cosine angles
 
     # Test MultiHeadAttention
     print("\nTesting MultiHeadAttention:")
@@ -92,6 +96,19 @@ def main():
     print(f"Sample of MHA output (first batch, first 5 tokens, first 5 dimensions):\n{attention_output[0, :5, :5]}")
 
 
+    mha_params = {
+        'd_model':d_model, 
+        'h': num_heads, 
+        'max_seq_len': max_seq_len, 
+        'dropout': dropout         
+    }
+    transformer = Transformer(N,vocab_size, mha_params,block_dropout=0.1)
+    output_logits = transformer(input_tensor).to(device)
+    expected_shape = (batch_size, input_tensor.size(1), vocab_size)
+    assert output_logits.shape == expected_shape, f"Expected shape {expected_shape}, got {output_logits.shape}"
+    
+    probs_result = torch.nn.functional.softmax(output_logits,dim=-1)
+    print(probs_result)
     
 
 if __name__ == "__main__":
