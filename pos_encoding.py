@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn 
 import matplotlib.pyplot as plt 
 
-device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class RoPE(nn.Module):
     def __init__(self,d_model: int, max_seq_len: int, base: int =10_000) -> None:
