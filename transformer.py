@@ -8,7 +8,14 @@ from MultiHeadAttention import MultiHeadAttention
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class TransformerBlock(nn.Module):
+    """Block to be iterated N times"""
     def __init__(self, mha: MultiHeadAttention, d_model: int = 128, dropout: float = 0.0):
+        """
+        Args:
+            mha: Multi-Head Attention instance.
+            d_model: embedding dimension, default 128.
+            dropout: percentage of dropout, default 0.
+        """
         super(TransformerBlock,self).__init__()
         self.mha = mha 
         self.norm1 = nn.LayerNorm(d_model)
@@ -21,15 +28,11 @@ class TransformerBlock(nn.Module):
             nn.Linear(4*d_model, d_model)
         )
         self.dropout = dropout 
-
-    def _sublayer(self,x):
-        x = x + self.mha(self.norm1(x))
-        x = x + self.ff(self.norm2(x))
-        return x
         
     
     def forward(self,x):
-        x = self._sublayer(x)
+        x = x + self.mha(self.norm1(x))
+        x = x + self.ff(self.norm2(x))
         return x 
 
 
