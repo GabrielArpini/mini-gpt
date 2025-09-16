@@ -21,6 +21,7 @@ class TransformerBlock(nn.Module):
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         
+        # Feed Forward 
         self.ff = nn.Sequential(
             nn.Linear(d_model,4*d_model),
             nn.GELU(),
@@ -31,13 +32,20 @@ class TransformerBlock(nn.Module):
         
     
     def forward(self,x):
-        x = x + self.mha(self.norm1(x))
-        x = x + self.ff(self.norm2(x))
+        x = x + self.mha(self.norm1(x)) # First residual 
+        x = x + self.ff(self.norm2(x)) # Second Residual
         return x 
 
 
 class Transformer(nn.Module):
-    def __init__(self, N, vocab_size:int, mha_params: dict, block_dropout: float = 0.0):
+    def __init__(self, N: int, vocab_size: int, mha_params: dict, block_dropout: float = 0.0):
+        """
+        Args:
+            N: number of times to iterate TransformerBlock.
+            vocab_size: The size of the vocabulary.
+            mha_params: parameters for MultiHeadAttention, it will be unpacked so careful with name.
+            block_dropout: dropout to ble applied in TransformerBlock. 
+        """
         super(Transformer,self).__init__()
         self.d_model = mha_params["d_model"]
         self.blocklist = nn.ModuleList([
