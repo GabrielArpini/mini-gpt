@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn 
 from MultiHeadAttention import MultiHeadAttention
 
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class TransformerBlock(nn.Module):
@@ -35,7 +34,6 @@ class TransformerBlock(nn.Module):
         x = x + self.mha(self.norm1(x)) # First residual 
         x = x + self.ff(self.norm2(x)) # Second Residual
         return x 
-
 
 class Transformer(nn.Module):
     def __init__(self, N: int, vocab_size: int, mha_params: dict, block_dropout: float = 0.0):
