@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "datasets>=4.0.0",
+    "kaggle>=1.7.4.5",
+    "kagglehub>=0.3.13",
     "matplotlib>=3.10.6",
     "regex>=2025.9.1",
     "torch>=2.8.0",

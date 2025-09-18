@@ -1,3 +1,5 @@
+from __future__ import annotations 
+
 from datasets import load_dataset
 from utils import * 
 from tokenizer import Tokenizer 
@@ -5,11 +7,115 @@ import os
 from pos_encoding import RoPE
 from MultiHeadAttention import MultiHeadAttention
 from transformer import Transformer, TransformerBlock
+import kagglehub
+from torch.utils.data import DataLoader
+
 
 
 import torch 
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def download_data():
+    root_path = os.getcwd()
+    path_to_save = f'{root_path}/data/brazilian_lit' 
+    if not os.path.exists(path_to_save):
+        os.makedirs(path_to_save)
+    
+    print("Downloading dataset...")
+    dataset_path = kagglehub.dataset_download("rtatman/brazilian-portuguese-literature-corpus")
+    print("Success!")
+
+    return dataset_path 
+
+def process_example(examples):
+        all_input_ids = []
+        all_labels = []
+        for text in examples["text"]:
+            tokens = tokenizer.encode(text)
+            if len(tokens) < 1: 
+                print(f"Warning: Empty tokens for text: {text[:50]}...")
+                continue
+            # Context window.
+            for i in range(0, len(tokens) - max_seq_len + 1, max_seq_len // 2):
+                chunk = tokens[i:i + max_seq_len]
+                if len(chunk) < max_seq_len:
+                    chunk += [tokenizer.pad_token_id] * (max_seq_len - len(chunk))
+                all_input_ids.append(chunk)
+                all_labels.append(chunk[1:] + [tokenizer.pad_token_id])
+        return {"input_ids": all_input_ids, "labels": all_labels}
+    
+def train(
+    tokenizer: Tokenizer = None,
+    batch_size: int = 8,
+    max_seq_len: int = 400,
+    test_size: int = 0.1,
+    epochs: int = 10,
+    lr=1e-4
+):
+    # This function is inside train, because it needs the arguments
+    # if it is outside i will need to use fn_kwargs inside map function
+    # which gets messy easily. 
+    def process_example(examples):
+        all_input_ids = []
+        all_labels = []
+        for text in examples["text"]:
+            if not text.strip():
+                continue
+            tokens = tokenizer.encode(text)
+            # Context window.
+            for i in range(0, len(tokens) - max_seq_len + 1, max_seq_len // 2):
+                chunk = tokens[i:i + max_seq_len]
+                if len(chunk) < max_seq_len:
+                    chunk += [tokenizer.pad_token_id] * (max_seq_len - len(chunk))
+                all_input_ids.append(chunk)
+                all_labels.append(chunk[1:] + [tokenizer.pad_token_id])
+        return {"input_ids": all_input_ids, "labels": all_labels}
+
+
+    # Get dataset 
+    dataset_path = download_data() + '/Brazilian_Portugese_Corpus'
+    print(dataset_path)
+    dataset = load_dataset("text", data_files={"train": dataset_path + "/*.txt"}, encoding="iso-8859-1")
+    dataset = dataset.map(process_example, batched=True, remove_columns=["text"])
+    
+
+    dataset_splits = dataset['train'].train_test_split(test_size=test_size)
+    train_dataset = dataset_splits['train']
+    test_dataset = dataset_splits['test']
+    
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    
+    # Setup training instances.
+    model = Transformer().to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    criterion = nn.CrossEntropyLoss()
+
+    # Start training loop 
+    for epoch in range(epochs):
+        model.train()
+        total_loss = 0
+        for batch in train_loader:
+            optimizer.zero_grad()
+            input_ids = batch['input_ids'].to(device)
+            target_labels = batch['labels'][1:]
+            y_pred = model(input_ids)
+            logits = y_pred.logits 
+            loss = criterion(logits.view(-1, logits.size(-1)), target_labels.view(-1))
+            loss.backward()
+            # Maybe grad clip later 
+            
+            optimizer.step()
+            total_loss += loss.item()
+        avg_loss = total_loss / len(train_loader)
+        print(f"Epoch: {epoch+1}, AVG loss: {avg_loss:.4f}")
+
+
+
+
+
 
 def main():
     merges_path = 'data/merges.json'
@@ -110,6 +216,18 @@ def main():
     probs_result = torch.nn.functional.softmax(output_logits,dim=-1)
     print(probs_result)
     
+    
+
+    print("\n starting training")
+
+    train(tokenizer=tokenizer,
+        batch_size = 8,
+        max_seq_len = 400,
+        test_size = 0.1,
+        epochs = 10,
+        lr=1e-4
+    )
+
 
 if __name__ == "__main__":
     main()
