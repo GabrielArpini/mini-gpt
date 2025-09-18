@@ -1,6 +1,9 @@
 ## Project path 
 
+Need to run 
+    export KAGGLEHUB_CACHE=$PWD/data/brazilian_lit
 
+since kaggle doesnt have parameter to determine path to download dataset in user machine. 
 
 ### Tokenizer
 
