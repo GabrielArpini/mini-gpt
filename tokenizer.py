@@ -23,6 +23,14 @@ class Tokenizer:
         if vocab_size is not None:
             self.vocab_size = vocab_size
         self.merges = {}
+
+        # Special tokens 
+        self.special_tokens = ['[PAD]','[BOS]','[EOS]']
+        self.encoded_specials = [i.encode('utf-8') for i in self.special_tokens]
+        self.pad = self.encoded_specials[0]
+        self.bos = self.encoded_specials[1]
+        self.eos = self.encoded_specials[2]
+
     def _normalize(self,corpus: str) -> List[int]:   
         """
         Normalizes the input corpus and returns a list of byte integers. 
@@ -49,10 +57,21 @@ class Tokenizer:
         print("Starting tokenizer training...")
         # Create initial state with all bytes from ascii table(256 total).
         initial_state = [bytes([i]) for i in range(256)]
+
+         
+
         # Fills vocabulary with id to char from initial state
         self.vocab ={i: char for i,char in enumerate(initial_state)}
+        # Add specials 
+        special_tokens_vocab = {i+256: special for i, special in enumerate(self.encoded_specials)}
+        special_tokens_vocab_inverse = {special: i+256 for i, special in enumerate(self.encoded_specials)}
+
+        self.vocab.update(special_tokens_vocab)
+
+
         # Fills an inverse vocab which is useful to tokenize corpus into ids as bellow
         self.inverse_vocab = {char: i for i,char in enumerate(initial_state)}
+        self.inverse_vocab.update(special_tokens_vocab_inverse)
         # Tokenizes the corpus into the correspondent ids.
         tokenized_ids = [i for i in self.corpus]
 
@@ -85,8 +104,20 @@ class Tokenizer:
         print("Starting training...")
         start = time.time()
         initial_state = [bytes([i]) for i in range(256)]
-        self.vocab = {i: char for i,char in enumerate(initial_state)}
-        self.inverse_vocab = {char: i for i, char in enumerate(initial_state)}
+
+        # Fills vocabulary with id to char from initial state
+        self.vocab ={i: char for i,char in enumerate(initial_state)}
+        # Add specials 
+        special_tokens_vocab = {i+256: special for i, special in enumerate(self.encoded_specials)}
+        special_tokens_vocab_inverse = {special: i+256 for i, special in enumerate(self.encoded_specials)}
+
+        self.vocab.update(special_tokens_vocab)
+
+
+        # Fills an inverse vocab which is useful to tokenize corpus into ids as bellow
+        self.inverse_vocab = {char: i for i,char in enumerate(initial_state)}
+        self.inverse_vocab.update(special_tokens_vocab_inverse)
+    
         
         for i in range(len(initial_state), self.vocab_size):
             _count = Counter()
@@ -170,22 +201,29 @@ class Tokenizer:
 
         return replaced
     def encode(self,text: str) -> List[int]:
-        # TODO: APPLY TESTS 
+
         # First it needs to normalize text 
         normalized_text = self._normalize(text)
 
         # Create list of bytes 
-        list_bytes = [i for i in normalized_text]
+        list_bytes = normalized_text 
         # Iterate the merges cheatsheet
         for pair, id in self.merges.items():
             # Use replce_pair to replace the pairs from pairs in merges dict 
             replaced_pairs = self.replace_pair(pair,list_bytes,id)
             # Updates list_bytes so next iteration uses an updated version.
             list_bytes = replaced_pairs
-        return list_bytes
+
+        # Add EOS and BOS 
+        out_list = [self.inverse_vocab[self.bos]]
+        out_list.extend(list_bytes)
+        out_list.append(self.inverse_vocab[self.eos])
+        
+        return out_list 
     
     def decode(self,tokenized_ids: List) -> str:
-        decoded_bytes = [self.vocab[item] for item in tokenized_ids]
+        special_tokens = [self.inverse_vocab[special_byte] for special_byte in self.encoded_specials]
+        decoded_bytes = [self.vocab[item] for item in tokenized_ids if item not in special_tokens]
         decoded_str = "".join([i.decode("UTF-8",errors='replace') for i in decoded_bytes])
         return decoded_str
 

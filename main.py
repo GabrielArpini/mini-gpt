@@ -28,22 +28,7 @@ def download_data():
 
     return dataset_path 
 
-def process_example(examples):
-        all_input_ids = []
-        all_labels = []
-        for text in examples["text"]:
-            tokens = tokenizer.encode(text)
-            if len(tokens) < 1: 
-                print(f"Warning: Empty tokens for text: {text[:50]}...")
-                continue
-            # Context window.
-            for i in range(0, len(tokens) - max_seq_len + 1, max_seq_len // 2):
-                chunk = tokens[i:i + max_seq_len]
-                if len(chunk) < max_seq_len:
-                    chunk += [tokenizer.pad_token_id] * (max_seq_len - len(chunk))
-                all_input_ids.append(chunk)
-                all_labels.append(chunk[1:] + [tokenizer.pad_token_id])
-        return {"input_ids": all_input_ids, "labels": all_labels}
+
     
 def train(
     tokenizer: Tokenizer = None,
@@ -63,6 +48,8 @@ def train(
             if not text.strip():
                 continue
             tokens = tokenizer.encode(text)
+            assert len(tokens) > 0, "There are no tokens."
+
             # Context window.
             for i in range(0, len(tokens) - max_seq_len + 1, max_seq_len // 2):
                 chunk = tokens[i:i + max_seq_len]
@@ -77,12 +64,18 @@ def train(
     dataset_path = download_data() + '/Brazilian_Portugese_Corpus'
     print(dataset_path)
     dataset = load_dataset("text", data_files={"train": dataset_path + "/*.txt"}, encoding="iso-8859-1")
+    print(dataset['train'][:5])  # Print first 5 processed examples
+
     dataset = dataset.map(process_example, batched=True, remove_columns=["text"])
-    
+
+    print(dataset['train'][:5])  # Print first 5 processed examples
+    print(len(dataset)) 
 
     dataset_splits = dataset['train'].train_test_split(test_size=test_size)
     train_dataset = dataset_splits['train']
     test_dataset = dataset_splits['test']
+    print(len(train_dataset))
+    print(len(test_dataset))
     
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
