@@ -45,21 +45,20 @@ def train(
         all_input_ids = []
         all_labels = []
         for text in examples["text"]:
-            if not text.strip():
-                continue
-            tokens = tokenizer.encode(text)
+            text_utf8 = text.encode('utf-8').decode('utf-8') if text else '' 
+            tokens = tokenizer.encode(text_utf8)
             assert len(tokens) > 0, "There are no tokens."
 
             # Context window.
             for i in range(0, len(tokens) - max_seq_len + 1, max_seq_len // 2):
                 chunk = tokens[i:i + max_seq_len]
                 if len(chunk) < max_seq_len:
-                    chunk += [tokenizer.pad_token_id] * (max_seq_len - len(chunk))
+                    chunk += [tokenizer.pad_id] * (max_seq_len - len(chunk))
                 all_input_ids.append(chunk)
-                all_labels.append(chunk[1:] + [tokenizer.pad_token_id])
+                all_labels.append(chunk[1:] + [tokenizer.pad_id])
         return {"input_ids": all_input_ids, "labels": all_labels}
 
-
+    
     # Get dataset 
     dataset_path = download_data() + '/Brazilian_Portugese_Corpus'
     print(dataset_path)
@@ -113,7 +112,9 @@ def train(
 def main():
     merges_path = 'data/merges.json'
     vocab_path = 'data/vocab.json'
-    tokenizer = Tokenizer(vocab_size=300)
+    merges_path = 'data/merges.json'
+
+    tokenizer = Tokenizer(vocab_size=260)
     if not os.path.exists(merges_path) and not os.path.exists(vocab_path):
         iterator = DatasetIterator()
         tokenizer.train_from_iterator(iterator)

@@ -72,13 +72,17 @@ class Tokenizer:
         # Fills an inverse vocab which is useful to tokenize corpus into ids as bellow
         self.inverse_vocab = {char: i for i,char in enumerate(initial_state)}
         self.inverse_vocab.update(special_tokens_vocab_inverse)
+
+        self.pad_id = self.inverse_vocab[self.pad]
+        self.eos_id = self.inverse_vocab[self.eos]
+        self.bos_id = self.inverse_vocab[self.bos]
         # Tokenizes the corpus into the correspondent ids.
         tokenized_ids = [i for i in self.corpus]
 
         # Now training process can start by iterating to find frequent pairs.
         # The idx(id to be assigned) starts from the end of the initial_state size(256)
         # towards the defined vocab_size, so essentially it learns len(vocab_size) - len(initial_state) combinations.
-        for idx in range(len(self.vocab), self.vocab_size):
+        for idx in range(len(initial_state) + len(self.encoded_specials), self.vocab_size):
             # I think the functions and operations bellow explains themselves.
             pair = self.find_pairs(tokenized_ids)
             if pair is None:
@@ -117,9 +121,12 @@ class Tokenizer:
         # Fills an inverse vocab which is useful to tokenize corpus into ids as bellow
         self.inverse_vocab = {char: i for i,char in enumerate(initial_state)}
         self.inverse_vocab.update(special_tokens_vocab_inverse)
-    
         
-        for i in range(len(initial_state), self.vocab_size):
+        self.pad_id = self.inverse_vocab[self.pad]
+        self.eos_id = self.inverse_vocab[self.eos]
+        self.bos_id = self.inverse_vocab[self.bos]
+        
+        for i in range(len(initial_state) + len(self.encoded_specials), self.vocab_size):
             _count = Counter()
             for chunk in iterator:
                 if not isinstance(chunk, dict) or 'text' not in chunk:
@@ -215,16 +222,19 @@ class Tokenizer:
             list_bytes = replaced_pairs
 
         # Add EOS and BOS 
-        out_list = [self.inverse_vocab[self.bos]]
+        out_list = [self.bos_id]
         out_list.extend(list_bytes)
-        out_list.append(self.inverse_vocab[self.eos])
+        out_list.append(self.eos_id)
         
         return out_list 
     
     def decode(self,tokenized_ids: List) -> str:
-        special_tokens = [self.inverse_vocab[special_byte] for special_byte in self.encoded_specials]
+        special_tokens = [self.eos_id, self.bos_id, self.pad_id]
         decoded_bytes = [self.vocab[item] for item in tokenized_ids if item not in special_tokens]
         decoded_str = "".join([i.decode("UTF-8",errors='replace') for i in decoded_bytes])
+        
+
+
         return decoded_str
 
     def save(self, merges_path: str, vocab_path: str) -> None:
@@ -246,7 +256,6 @@ class Tokenizer:
         
         
     def load(self, merges_path:str, vocab_path: str) -> None:
-        #TODO: Handle merges_path and vocab_path existence. 
         # Loads the json from specified path.
         
         if os.path.exists(merges_path) and os.path.exists(vocab_path):
@@ -265,6 +274,10 @@ class Tokenizer:
                     merged_t_id = item["merged_token"]
                     self.vocab[item_id] = bytes(merged_t_id)
                     self.inverse_vocab[bytes(merged_t_id)] = item_id
+                    
+                self.pad_id = self.inverse_vocab[self.pad]
+                self.eos_id = self.inverse_vocab[self.eos]
+                self.bos_id = self.inverse_vocab[self.bos]
         else:
             print("Provided path(s) doesnt exists.")
     
