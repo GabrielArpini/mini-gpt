@@ -36,7 +36,7 @@ class TransformerBlock(nn.Module):
         return x 
 
 class Transformer(nn.Module):
-    def __init__(self, N: int, vocab_size: int, mha_params: dict, block_dropout: float = 0.0):
+    def __init__(self, vocab_size:int, mha_params: dict, N: int = 8, block_dropout: float = 0.0):
         """
         Args:
             N: number of times to iterate TransformerBlock.
@@ -45,7 +45,8 @@ class Transformer(nn.Module):
             block_dropout: dropout to ble applied in TransformerBlock. 
         """
         super(Transformer,self).__init__()
-        self.d_model = mha_params["d_model"]
+        self.d_model = mha_params['d_model']
+        self.embedding = nn.Embedding(vocab_size, self.d_model).to(device)
         self.blocklist = nn.ModuleList([
             TransformerBlock(MultiHeadAttention(**mha_params),self.d_model, block_dropout).to(device) 
             for _ in range(N)])
@@ -55,6 +56,7 @@ class Transformer(nn.Module):
             nn.Linear(self.d_model,vocab_size)
         ).to(device)
     def forward(self, x):
+        x = self.embedding(x)
         for block in self.blocklist:
             x = block(x)
         x = self.final_layer(x)

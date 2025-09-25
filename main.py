@@ -9,7 +9,8 @@ from MultiHeadAttention import MultiHeadAttention
 from transformer import Transformer, TransformerBlock
 import kagglehub
 from torch.utils.data import DataLoader
-
+import torch 
+import torch.nn as nn
 
 
 import torch 
@@ -31,43 +32,65 @@ def download_data():
 
     
 def train(
+    mha_params: dict,
+    vocab_size: int,
     tokenizer: Tokenizer = None,
+    N: int = 8,
     batch_size: int = 8,
     max_seq_len: int = 400,
     test_size: int = 0.1,
     epochs: int = 10,
     lr=1e-4
 ):
+
     # This function is inside train, because it needs the arguments
     # if it is outside i will need to use fn_kwargs inside map function
-    # which gets messy easily. 
-    def process_example(examples):
+    # which gets messy easily.
+    
+    def collate_fn(batch):
+        # batch is list of dicts, each with 'sentence'
+        sentences = [item['sentence'] for item in batch]
+        
+        # Tokenize all sentences in batch
         all_input_ids = []
         all_labels = []
-        for text in examples["text"]:
-            text_utf8 = text.encode('utf-8').decode('utf-8') if text else '' 
-            tokens = tokenizer.encode(text_utf8)
-            assert len(tokens) > 0, "There are no tokens."
+        for text in sentences:
+            tokens = tokenizer.encode(text)  # Full sentence tokens (includes BOS/EOS)
+            if not tokens:
+                print(f"Warning: Empty token list for sentence {i}: {text}")
+                tokens = [tokenizer.pad_id] * max_seq_len
 
-            # Context window.
-            for i in range(0, len(tokens) - max_seq_len + 1, max_seq_len // 2):
-                chunk = tokens[i:i + max_seq_len]
-                if len(chunk) < max_seq_len:
-                    chunk += [tokenizer.pad_id] * (max_seq_len - len(chunk))
-                all_input_ids.append(chunk)
-                all_labels.append(chunk[1:] + [tokenizer.pad_id])
-        return {"input_ids": all_input_ids, "labels": all_labels}
-
+            # Truncate to max_seq_len (keep BOS, drop tail if needed)
+            if len(tokens) > max_seq_len:
+                tokens = tokens[:max_seq_len]
+            # Pad to max_seq_len
+            tokens += [tokenizer.pad_id] * (max_seq_len - len(tokens))
+            
+            input_ids = tokens
+            labels = tokens[1:] + [tokenizer.pad_id]  # Shift for causal LM
+            
+            all_input_ids.append(input_ids)
+            all_labels.append(labels)
+        
+        # Stack into tensors: (batch_size, max_seq_len)
+        input_ids_tensor = torch.tensor(all_input_ids, dtype=torch.long).to(device)
+        labels_tensor = torch.tensor(all_labels, dtype=torch.long).to(device)
+        
+        return {"input_ids": input_ids_tensor, "labels": labels_tensor}
     
+
+
+
+    if not isinstance(mha_params, dict):
+        raise TypeError(f"Expected mha_params to be a dict, got {type(mha_params)}: {mha_params}") 
     # Get dataset 
-    dataset_path = download_data() + '/Brazilian_Portugese_Corpus'
-    print(dataset_path)
-    dataset = load_dataset("text", data_files={"train": dataset_path + "/*.txt"}, encoding="iso-8859-1")
-    print(dataset['train'][:5])  # Print first 5 processed examples
-
-    dataset = dataset.map(process_example, batched=True, remove_columns=["text"])
+    #dataset_path = download_data() + '/Brazilian_Portugese_Corpus'
+    #print(dataset_path)
+    #dataset = load_dataset("text", data_files={"train": dataset_path + "/*.txt"}, encoding="iso-8859-1")
+    dataset = load_dataset("iara-project/raw_dataset_with_embeddings_bert-base-portuguese-cased-nli-assin-2")
 
     print(dataset['train'][:5])  # Print first 5 processed examples
+
     print(len(dataset)) 
 
     dataset_splits = dataset['train'].train_test_split(test_size=test_size)
@@ -77,11 +100,11 @@ def train(
     print(len(test_dataset))
     
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
     
     # Setup training instances.
-    model = Transformer().to(device)
+    model = Transformer(vocab_size=vocab_size,mha_params=mha_params,N=N,block_dropout=0.2).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
 
@@ -92,10 +115,9 @@ def train(
         for batch in train_loader:
             optimizer.zero_grad()
             input_ids = batch['input_ids'].to(device)
-            target_labels = batch['labels'][1:]
-            y_pred = model(input_ids)
-            logits = y_pred.logits 
-            loss = criterion(logits.view(-1, logits.size(-1)), target_labels.view(-1))
+            target_labels = batch['labels']
+            y_pred = model(input_ids) 
+            loss = criterion(y_pred.view(-1, y_pred.size(-1)), target_labels.view(-1))
             loss.backward()
             # Maybe grad clip later 
             
@@ -202,19 +224,20 @@ def main():
         'max_seq_len': max_seq_len, 
         'dropout': dropout         
     }
-    transformer = Transformer(N,vocab_size, mha_params,block_dropout=0.1)
-    output_logits = transformer(input_tensor).to(device)
-    expected_shape = (batch_size, input_tensor.size(1), vocab_size)
-    assert output_logits.shape == expected_shape, f"Expected shape {expected_shape}, got {output_logits.shape}"
-    
-    probs_result = torch.nn.functional.softmax(output_logits,dim=-1)
-    print(probs_result)
+
     
     
 
     print("\n starting training")
-
-    train(tokenizer=tokenizer,
+    mha_params = {
+        'd_model':d_model, 
+        'h': num_heads, 
+        'max_seq_len': max_seq_len, 
+        'dropout': dropout         
+    }
+    train(tokenizer = tokenizer,
+        mha_params = mha_params,
+        vocab_size = vocab_size,
         batch_size = 8,
         max_seq_len = 400,
         test_size = 0.1,
