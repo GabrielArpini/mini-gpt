@@ -19,6 +19,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def download_data():
     root_path = os.getcwd()
+    os.makedirs("data", exist_ok=True)
     path_to_save = f'{root_path}/data/brazilian_lit' 
     if not os.path.exists(path_to_save):
         os.makedirs(path_to_save)
@@ -125,6 +126,7 @@ def train(
             total_loss += loss.item()
         avg_loss = total_loss / len(train_loader)
         print(f"Epoch: {epoch+1}, AVG loss: {avg_loss:.4f}")
+    return model
 
 
 
@@ -166,23 +168,51 @@ def main():
         'dropout': dropout         
     }
     print("\n starting training")
+    
+    base_model_path = "models/base_model.pt"
+    os.makedirs("models", exist_ok=True)
+    model = Transformer(vocab_size=vocab_size, mha_params=mha_params, N=N, block_dropout=0.2).to(device)
+    if not os.path.exists(base_model_path):
+        model = train(tokenizer = tokenizer,
+            mha_params = mha_params,
+            vocab_size = vocab_size,
+            batch_size = 8,
+            max_seq_len = 400,
+            test_size = 0.1,
+            epochs = 3,
+            lr=1e-4
+        )
+        torch.save(model.state_dict(), base_model_path)
+    else:
+        state_dict = torch.load(base_model_path, weights_only=True)
+        model.load_state_dict(state_dict)
+   
+    print("Testing model...")
+    
+    prompt = "Brasil"
+    input_ids = tokenizer.encode(prompt)
+    # Pad to max_seq_len
+    input_ids = input_ids + [tokenizer.pad_id] * (max_seq_len - len(input_ids))
+    input_ids = torch.tensor(input_ids, dtype=torch.long).unsqueeze(0).to(device)  # Shape: [1, 400]
 
-    mha_params = {
-        'd_model':d_model, 
-        'h': num_heads, 
-        'max_seq_len': max_seq_len, 
-        'dropout': dropout         
-    }
-    train(tokenizer = tokenizer,
-        mha_params = mha_params,
-        vocab_size = vocab_size,
-        batch_size = 8,
-        max_seq_len = 400,
-        test_size = 0.1,
-        epochs = 10,
-        lr=1e-4
-    )
+    generated_tokens = input_ids[0].tolist()  # Start with prompt tokens
+    max_new_tokens = 200
 
+    with torch.no_grad():
+        for _ in range(max_new_tokens):
+            logits = model(input_ids)[:, -1, :]  # Logits for last token: [1, vocab_size]
+            logits[:, tokenizer.pad_id] = float('-inf')
+            probs = torch.nn.functional.softmax(logits, dim=-1)
+            next_token = torch.argmax(probs, dim=-1).item()  # Get highest-probability token
+            print(next_token)
+            generated_tokens.append(next_token)
+            # Update input_ids with new token
+            input_ids = torch.tensor(generated_tokens[-max_seq_len:], dtype=torch.long).unsqueeze(0).to(device)
+    
+    generated_text = tokenizer.decode(generated_tokens)
+    print(f"Generated text: {generated_text}")
+
+   
 
 if __name__ == "__main__":
     main()
