@@ -179,7 +179,7 @@ def main():
             batch_size = 8,
             max_seq_len = 400,
             test_size = 0.1,
-            epochs = 3,
+            epochs = 10,
             lr=1e-4
         )
         torch.save(model.state_dict(), base_model_path)

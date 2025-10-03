@@ -307,7 +307,7 @@ if __name__ == "__main__":
     print(decoded_text)
     print("-" * 50)
 
-   
+    os.makedirs('data', exist_ok=True) 
     tokenizer.save("data/merges.json", "data/vocabulary.json")
     print("\n" + "-" * 50)
 
