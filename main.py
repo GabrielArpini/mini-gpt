@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datasets import load_dataset
 from utils import * 
-from tokenizer import Tokenizer 
+#from tokenizer import Tokenizer 
+import tiktoken
 import os 
 from pos_encoding import RoPE
 from MultiHeadAttention import MultiHeadAttention
@@ -33,6 +34,7 @@ def download_data():
 
     
 def train(
+    enc, # encoder from tiktoken 
     mha_params: dict,
     vocab_size: int,
     tokenizer: Tokenizer = None,
@@ -55,20 +57,21 @@ def train(
         # Tokenize all sentences in batch
         all_input_ids = []
         all_labels = []
+        pad_token_id = enc.encode('<|endoftext|>', allowed_special={'<|endoftext|>'})[0]  # Get pad token ID
         for text in sentences:
-            tokens = tokenizer.encode(text)  # Full sentence tokens (includes BOS/EOS)
+            tokens = enc.encode(text, allowed_special={'<|endoftext|>'})
+            #tokens = tokenizer.encode(text)  # Full sentence tokens (includes BOS/EOS)
             if not tokens:
                 print(f"Warning: Empty token list for sentence {i}: {text}")
-                tokens = [tokenizer.pad_id] * max_seq_len
+                tokens = [pad_token_id] * max_seq_len
 
             # Truncate to max_seq_len (keep BOS, drop tail if needed)
             if len(tokens) > max_seq_len:
                 tokens = tokens[:max_seq_len]
             # Pad to max_seq_len
-            tokens += [tokenizer.pad_id] * (max_seq_len - len(tokens))
-            
-            input_ids = tokens
-            labels = tokens[1:] + [tokenizer.pad_id]  # Shift for causal LM
+            tokens += [pad_token_id] * (max_seq_len - len(tokens))
+            input_ids = tokens 
+            labels = tokens[1:] + [pad_token_id]
             
             all_input_ids.append(input_ids)
             all_labels.append(labels)
@@ -90,16 +93,11 @@ def train(
     #dataset = load_dataset("text", data_files={"train": dataset_path + "/*.txt"}, encoding="iso-8859-1")
     dataset = load_dataset("iara-project/raw_dataset_with_embeddings_bert-base-portuguese-cased-nli-assin-2")
 
-    print(dataset['train'][:5])  # Print first 5 processed examples
-
-    print(len(dataset)) 
 
     dataset_splits = dataset['train'].train_test_split(test_size=test_size)
     train_dataset = dataset_splits['train']
     test_dataset = dataset_splits['test']
-    print(len(train_dataset))
-    print(len(test_dataset))
-    
+
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
@@ -137,17 +135,21 @@ def main():
     merges_path = 'data/merges.json'
     vocab_path = 'data/vocab.json'
     merges_path = 'data/merges.json'
+    os.makedirs('data', exist_ok=True)
 
-    tokenizer = Tokenizer(vocab_size=260)
-    if not os.path.exists(merges_path) and not os.path.exists(vocab_path):
-        iterator = DatasetIterator()
-        tokenizer.train_from_iterator(iterator)
-        tokenizer.save(merges_path,vocab_path)
+
+    #tokenizer = Tokenizer(vocab_size=1000)
+    #if not os.path.exists(merges_path) and not os.path.exists(vocab_path):
+        #iterator = DatasetIterator()
+        #tokenizer.train_from_iterator(iterator)
+        #tokenizer.save(merges_path,vocab_path)
     
-    if not tokenizer.merges or not tokenizer.vocab:
-        tokenizer.load(merges_path, vocab_path)
+    #if not tokenizer.merges or not tokenizer.vocab:
+        #tokenizer.load(merges_path, vocab_path)
 
  
+    enc = tiktoken.get_encoding("gpt2")  # ~50,257 tokens
+    vocab_size = enc.n_vocab  # Use tiktoken's vocab size
 
     # HYPERPARAMETERS
 
@@ -158,7 +160,7 @@ def main():
     dropout = 0.1
     N = 8
 
-    vocab_size = tokenizer.vocab_size
+    #vocab_size = tokenizer.vocab_size
 
     
     mha_params = {
@@ -167,13 +169,13 @@ def main():
         'max_seq_len': max_seq_len, 
         'dropout': dropout         
     }
-    print("\n starting training")
+    print("\n starting model training")
     
     base_model_path = "models/base_model.pt"
     os.makedirs("models", exist_ok=True)
     model = Transformer(vocab_size=vocab_size, mha_params=mha_params, N=N, block_dropout=0.2).to(device)
     if not os.path.exists(base_model_path):
-        model = train(tokenizer = tokenizer,
+        model = train(enc,
             mha_params = mha_params,
             vocab_size = vocab_size,
             batch_size = 8,
@@ -204,7 +206,7 @@ def main():
             logits[:, tokenizer.pad_id] = float('-inf')
             probs = torch.nn.functional.softmax(logits, dim=-1)
             next_token = torch.argmax(probs, dim=-1).item()  # Get highest-probability token
-            print(next_token)
+
             generated_tokens.append(next_token)
             # Update input_ids with new token
             input_ids = torch.tensor(generated_tokens[-max_seq_len:], dtype=torch.long).unsqueeze(0).to(device)

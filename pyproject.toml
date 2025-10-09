@@ -10,5 +10,6 @@ dependencies = [
     "kagglehub>=0.3.13",
     "matplotlib>=3.10.6",
     "regex>=2025.9.1",
+    "tiktoken>=0.12.0",
     "torch>=2.8.0",
 ]
