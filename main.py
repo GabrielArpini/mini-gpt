@@ -14,7 +14,8 @@ import torch
 import torch.nn as nn
 
 
-import torch 
+import torch
+import torch.nn.functional as F 
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -128,8 +129,10 @@ def train(
 
 
 
-
-
+def temperature_sampling(logits, temperature):
+    #P(token) = (e^{logits/T}) / sum{e^{logits/T}}
+    scaled_logits = logits / temperature
+    return F.softmax(scaled_logits,dim=-1)
 
 def main():
     merges_path = 'data/merges.json'
@@ -206,8 +209,9 @@ def main():
         for _ in range(max_new_tokens):
             logits = model(input_ids)[:, -1, :]  # Logits for last token: [1, vocab_size]
             logits[:, pad_id] = float('-inf')
-            probs = torch.nn.functional.softmax(logits, dim=-1)
-            next_token = torch.argmax(probs, dim=-1).item()  # Get highest-probability token
+            probs = temperature_sampling(logits, temperature=0.7)
+            next_token = torch.multinomial(probs,num_samples=1)
+            next_token = next_token.item()
 
             generated_tokens.append(next_token)
             # Update input_ids with new token
