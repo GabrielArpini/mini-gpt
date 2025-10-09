@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn 
 from MultiHeadAttention import MultiHeadAttention
+from pos_encoding import RoPE
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -47,6 +48,8 @@ class Transformer(nn.Module):
         super(Transformer,self).__init__()
         self.d_model = mha_params['d_model']
         self.embedding = nn.Embedding(vocab_size, self.d_model).to(device)
+
+
         self.blocklist = nn.ModuleList([
             TransformerBlock(MultiHeadAttention(**mha_params),self.d_model, block_dropout).to(device) 
             for _ in range(N)])
