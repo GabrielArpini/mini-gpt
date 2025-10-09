@@ -105,7 +105,7 @@ class Tokenizer:
 
     def train_from_iterator(self, iterator, verbose=False):
         #TODO: implement verbose prints and fix time error. 
-        print("Starting training...")
+        print("Starting tokenizer training...")
         start = time.time()
         initial_state = [bytes([i]) for i in range(256)]
 
@@ -158,20 +158,11 @@ class Tokenizer:
             merges_done = i - 256 + 1 
             elapsed_time = time.time()-start
             avg_time_per_merge = elapsed_time / merges_done 
-            print(f"{merges_done} merges done in {elapsed_time:.2f}s. Remaining: {total_merges - merges_done}. Time prediction: {avg_time_per_merge*(total_merges-merges_done)}")
-            
+
         end = time.time()
         print(f"Training completed in {end-start} seconds.")
 
             
-
-                
-
-                
-                
-                
-
-
 
     # Helper function to find pairs given an tokenized list.
     def find_pairs(self, tokenized_list: List) -> Optional[Tuple[int, int]]:
@@ -253,7 +244,7 @@ class Tokenizer:
                 json.dump(vocab_list, f)
         else:
             print("Specified vocab path already exists, skipping...")
-        
+            
         
     def load(self, merges_path:str, vocab_path: str) -> None:
         # Loads the json from specified path.
