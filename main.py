@@ -192,7 +192,9 @@ def main():
     print("Testing model...")
     
     prompt = "Brasil"
-    input_ids = tokenizer.encode(prompt)
+    input_ids = enc.encode(prompt)
+    pad_id = enc.encode('<|endoftext|>', allowed_special={'<|endoftext|>'})[0]  # Get pad token ID
+
     # Pad to max_seq_len
     input_ids = input_ids + [tokenizer.pad_id] * (max_seq_len - len(input_ids))
     input_ids = torch.tensor(input_ids, dtype=torch.long).unsqueeze(0).to(device)  # Shape: [1, 400]
@@ -203,7 +205,7 @@ def main():
     with torch.no_grad():
         for _ in range(max_new_tokens):
             logits = model(input_ids)[:, -1, :]  # Logits for last token: [1, vocab_size]
-            logits[:, tokenizer.pad_id] = float('-inf')
+            logits[:, pad_id] = float('-inf')
             probs = torch.nn.functional.softmax(logits, dim=-1)
             next_token = torch.argmax(probs, dim=-1).item()  # Get highest-probability token
 
@@ -211,7 +213,10 @@ def main():
             # Update input_ids with new token
             input_ids = torch.tensor(generated_tokens[-max_seq_len:], dtype=torch.long).unsqueeze(0).to(device)
     
-    generated_text = tokenizer.decode(generated_tokens)
+    
+
+
+    generated_text = enc.decode(generated_tokens)
     print(f"Generated text: {generated_text}")
 
    
