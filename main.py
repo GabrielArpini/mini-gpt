@@ -43,7 +43,7 @@ def train(
     batch_size: int = 8,
     max_seq_len: int = 400,
     test_size: int = 0.1,
-    epochs: int = 10,
+    epochs: int = 50,
     lr=1e-4
 ):
 
