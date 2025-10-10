@@ -210,7 +210,7 @@ def main():
             logits = model(input_ids)[:, -1, :]  # Logits for last token: [1, vocab_size]
             logits[:, pad_id] = float('-inf')
             probs = temperature_sampling(logits, temperature=0.7)
-            next_token = torch.multinomial(probs,num_samples=1)
+            next_token = torch.multinomial(probs,num_samples=1) # Random sampling.
             next_token = next_token.item()
 
             generated_tokens.append(next_token)
