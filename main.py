@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from datasets import load_dataset
 from utils import * 
-#from tokenizer import Tokenizer 
+import tokenizers
+from tokenizers import Tokenizer
+from tokenizers.models import BPE
+from tokenizers.trainers import BpeTrainer
+from tokenizers.pre_tokenizers import Whitespace
 import tiktoken
 import os 
 from pos_encoding import RoPE
@@ -35,16 +39,17 @@ def download_data():
 
     
 def train(
-    enc, # encoder from tiktoken 
+    #enc, # encoder from tiktoken 
     mha_params: dict,
     vocab_size: int,
-    tokenizer: Tokenizer = None,
+    tokenizer: tokenizers.Tokenizer = None,
     N: int = 8,
     batch_size: int = 8,
     max_seq_len: int = 400,
     test_size: int = 0.1,
     epochs: int = 50,
-    lr=1e-4
+    lr=1e-4,
+    checkpoint=False 
 ):
 
     # This function is inside train, because it needs the arguments
@@ -58,22 +63,27 @@ def train(
         # Tokenize all sentences in batch
         all_input_ids = []
         all_labels = []
-        pad_token_id = enc.encode('<|endoftext|>', allowed_special={'<|endoftext|>'})[0]  # Get pad token ID
+        #pad_token_id = enc.encode('<|endoftext|>', allowed_special={'<|endoftext|>'})[0]  # Get pad token ID tiktoken 
+        
         for text in sentences:
-            tokens = enc.encode(text, allowed_special={'<|endoftext|>'})
-            #tokens = tokenizer.encode(text)  # Full sentence tokens (includes BOS/EOS)
+            #tokens = enc.encode(text, allowed_special={'<|endoftext|>'}) #tiktoken 
+            tokens = tokenizer.encode(text).ids  # Full sentence tokens (includes BOS/EOS)
             if not tokens:
                 print(f"Warning: Empty token list for sentence {i}: {text}")
-                tokens = [pad_token_id] * max_seq_len
+                tokens = [tokenizer.token_to_id("[PAD]")] * max_seq_len
+                #tokens = [pad_token_id] * max_seq_len # tiktoken 
 
             # Truncate to max_seq_len (keep BOS, drop tail if needed)
             if len(tokens) > max_seq_len:
                 tokens = tokens[:max_seq_len]
             # Pad to max_seq_len
-            tokens += [pad_token_id] * (max_seq_len - len(tokens))
+            tokens += [tokenizer.token_to_id("[PAD]")] * (max_seq_len - len(tokens))
+
+            #tokens += [pad_token_id] * (max_seq_len - len(tokens)) #tiktoken 
+
             input_ids = tokens 
-            labels = tokens[1:] + [pad_token_id]
-            
+            #labels = tokens[1:] + [pad_token_id]
+            labels = tokens[1:] + [tokenizer.token_to_id("[PAD]")]
             all_input_ids.append(input_ids)
             all_labels.append(labels)
         
@@ -125,6 +135,8 @@ def train(
             total_loss += loss.item()
         avg_loss = total_loss / len(train_loader)
         print(f"Epoch: {epoch+1}, AVG loss: {avg_loss:.4f}")
+        if checkpoint:
+            torch.save(model.state_dict(), f"models/checkpoints/epoch_{epoch}.pt")
     return model
 
 
@@ -137,23 +149,29 @@ def temperature_sampling(logits, temperature):
 def main():
     merges_path = 'data/merges.json'
     vocab_path = 'data/vocab.json'
-    merges_path = 'data/merges.json'
     os.makedirs('data', exist_ok=True)
 
-
-    #tokenizer = Tokenizer(vocab_size=1000)
-    #if not os.path.exists(merges_path) and not os.path.exists(vocab_path):
-        #iterator = DatasetIterator()
-        #tokenizer.train_from_iterator(iterator)
-        #tokenizer.save(merges_path,vocab_path)
+    # Initialize Hugging Face tokenizers BPE
     
-    #if not tokenizer.merges or not tokenizer.vocab:
-        #tokenizer.load(merges_path, vocab_path)
 
- 
-    enc = tiktoken.get_encoding("gpt2")  # ~50,257 tokens
-    vocab_size = enc.n_vocab  # Use tiktoken's vocab size
+    tokenizer = Tokenizer(BPE(unk_token="[UNK]"))
+    tokenizer.pre_tokenizer = Whitespace()
+    special_tokens = ["[PAD]", "[BOS]", "[EOS]", "[UNK]"]
+    if not os.path.exists(merges_path) and not os.path.exists(vocab_path):
+        iterator = DatasetIterator()
+        print("Starting tokenizer training...")
+        trainer = BpeTrainer(vocab_size=20000, special_tokens=special_tokens)
+        tokenizer.train_from_iterator(
+            (item['sentence'] if isinstance(item, dict) and 'sentence' in item else item for item in iterator),
+            trainer=trainer
+        )
+        tokenizer.save(vocab_path)
+        print("Tokenizer successfully trained!")
+    
+    if not tokenizer.get_vocab():
+        tokenizer = Tokenizer.from_file(vocab_path)
 
+    vocab_size = tokenizer.get_vocab_size()
     # HYPERPARAMETERS
 
     batch_size = 8
@@ -172,34 +190,44 @@ def main():
         'max_seq_len': max_seq_len, 
         'dropout': dropout         
     }
-    print("\n starting model training")
     
     base_model_path = "models/base_model.pt"
     os.makedirs("models", exist_ok=True)
     model = Transformer(vocab_size=vocab_size, mha_params=mha_params, N=N, block_dropout=0.2).to(device)
     if not os.path.exists(base_model_path):
-        model = train(enc,
+        print("\n starting model training")
+
+        model = train(
             mha_params = mha_params,
             vocab_size = vocab_size,
+            tokenizer = tokenizer,
             batch_size = 8,
             max_seq_len = 400,
             test_size = 0.1,
             epochs = 25,
-            lr=1e-4
+            lr=1e-4,
+            checkpoint=True
         )
         torch.save(model.state_dict(), base_model_path)
     else:
-        state_dict = torch.load(base_model_path, weights_only=True)
+        if torch.cuda.is_available():
+            state_dict = torch.load(base_model_path, weights_only=True)
+        else:
+            state_dict = torch.load(base_model_path,weights_only=True,map_location=torch.device('cpu'))
+
         model.load_state_dict(state_dict)
    
     print("Testing model...")
     
     prompt = "Brasil"
-    input_ids = enc.encode(prompt)
-    pad_id = enc.encode('<|endoftext|>', allowed_special={'<|endoftext|>'})[0]  # Get pad token ID
+    #input_ids = enc.encode(prompt)
+    input_ids = tokenizer.encode(prompt).ids
+
+    #pad_id = enc.encode('<|endoftext|>', allowed_special={'<|endoftext|>'})[0]  # Get pad token ID
 
     # Pad to max_seq_len
-    input_ids = input_ids + [pad_id] * (max_seq_len - len(input_ids))
+    #input_ids = input_ids + [pad_id] * (max_seq_len - len(input_ids))
+    input_ids = input_ids + [tokenizer.token_to_id("[PAD]")] * (max_seq_len - len(input_ids))
     input_ids = torch.tensor(input_ids, dtype=torch.long).unsqueeze(0).to(device)  # Shape: [1, 400]
 
     generated_tokens = input_ids[0].tolist()  # Start with prompt tokens
@@ -208,7 +236,9 @@ def main():
     with torch.no_grad():
         for _ in range(max_new_tokens):
             logits = model(input_ids)[:, -1, :]  # Logits for last token: [1, vocab_size]
-            logits[:, pad_id] = float('-inf')
+            #logits[:, pad_id] = float('-inf')
+            logits[:,tokenizer.token_to_id("[PAD]")] = float('-inf')
+
             probs = temperature_sampling(logits, temperature=0.7)
             next_token = torch.multinomial(probs,num_samples=1) # Random sampling.
             next_token = next_token.item()
@@ -217,10 +247,8 @@ def main():
             # Update input_ids with new token
             input_ids = torch.tensor(generated_tokens[-max_seq_len:], dtype=torch.long).unsqueeze(0).to(device)
     
-    
-
-
-    generated_text = enc.decode(generated_tokens)
+    #generated_text = enc.decode(generated_tokens)
+    generated_text = tokenizer.decode(generated_tokens)
     print(f"Generated text: {generated_text}")
 
    
