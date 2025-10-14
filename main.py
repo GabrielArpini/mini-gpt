@@ -184,7 +184,7 @@ def main():
             batch_size = 8,
             max_seq_len = 400,
             test_size = 0.1,
-            epochs = 10,
+            epochs = 25,
             lr=1e-4
         )
         torch.save(model.state_dict(), base_model_path)
@@ -199,7 +199,7 @@ def main():
     pad_id = enc.encode('<|endoftext|>', allowed_special={'<|endoftext|>'})[0]  # Get pad token ID
 
     # Pad to max_seq_len
-    input_ids = input_ids + [tokenizer.pad_id] * (max_seq_len - len(input_ids))
+    input_ids = input_ids + [pad_id] * (max_seq_len - len(input_ids))
     input_ids = torch.tensor(input_ids, dtype=torch.long).unsqueeze(0).to(device)  # Shape: [1, 400]
 
     generated_tokens = input_ids[0].tolist()  # Start with prompt tokens
