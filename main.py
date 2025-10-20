@@ -23,18 +23,7 @@ import torch.nn.functional as F
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def download_data():
-    root_path = os.getcwd()
-    os.makedirs("data", exist_ok=True)
-    path_to_save = f'{root_path}/data/brazilian_lit' 
-    if not os.path.exists(path_to_save):
-        os.makedirs(path_to_save)
-    
-    print("Downloading dataset...")
-    dataset_path = kagglehub.dataset_download("rtatman/brazilian-portuguese-literature-corpus")
-    print("Success!")
 
-    return dataset_path 
 
 
     
