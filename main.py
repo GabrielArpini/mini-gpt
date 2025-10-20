@@ -46,15 +46,14 @@ def train(
     # which gets messy easily.
     
     def collate_fn(batch):
-        # batch is list of dicts, each with 'sentence'
-        sentences = [item['sentence'] for item in batch]
+        sentences = [item['text'] for item in batch if item['text'].strip()]
         
         # Tokenize all sentences in batch
         all_input_ids = []
         all_labels = []
         #pad_token_id = enc.encode('<|endoftext|>', allowed_special={'<|endoftext|>'})[0]  # Get pad token ID tiktoken 
         
-        for text in sentences:
+        for i,text in enumerate(sentences):
             #tokens = enc.encode(text, allowed_special={'<|endoftext|>'}) #tiktoken 
             tokens = tokenizer.encode(text).ids  # Full sentence tokens (includes BOS/EOS)
             if not tokens:
@@ -90,10 +89,12 @@ def train(
     # Get dataset 
     #dataset_path = download_data() + '/Brazilian_Portugese_Corpus'
     #print(dataset_path)
-    #dataset = load_dataset("text", data_files={"train": dataset_path + "/*.txt"}, encoding="iso-8859-1")
-    dataset = load_dataset("iara-project/raw_dataset_with_embeddings_bert-base-portuguese-cased-nli-assin-2")
 
-
+    #dataset = load_dataset("iara-project/raw_dataset_with_embeddings_bert-base-portuguese-cased-nli-assin-2")
+    try:
+        dataset = load_dataset("text",data_files="data/machado_texts.txt", encoding="utf-8")
+    except Exception as e:
+        print(f"Error while loading dataset: {e}")
     dataset_splits = dataset['train'].train_test_split(test_size=test_size)
     train_dataset = dataset_splits['train']
     test_dataset = dataset_splits['test']
@@ -146,7 +147,7 @@ def main():
     tokenizer = Tokenizer(BPE(unk_token="[UNK]"))
     tokenizer.pre_tokenizer = Whitespace()
     special_tokens = ["[PAD]", "[BOS]", "[EOS]", "[UNK]"]
-    if not os.path.exists(merges_path) and not os.path.exists(vocab_path):
+    if not os.path.exists(merges_path) or not os.path.exists(vocab_path):
         iterator = DatasetIterator()
         print("Starting tokenizer training...")
         trainer = BpeTrainer(vocab_size=20000, special_tokens=special_tokens)
