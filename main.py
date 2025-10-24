@@ -36,7 +36,7 @@ def train(
     batch_size: int = 8,
     max_seq_len: int = 400,
     test_size: int = 0.1,
-    epochs: int = 50,
+    epochs: int = 20,
     lr=1e-4,
     checkpoint=False 
 ):
@@ -47,41 +47,25 @@ def train(
     
     def collate_fn(batch):
         sentences = [item['text'] for item in batch if item['text'].strip()]
-        
-        # Tokenize all sentences in batch
         all_input_ids = []
         all_labels = []
-        #pad_token_id = enc.encode('<|endoftext|>', allowed_special={'<|endoftext|>'})[0]  # Get pad token ID tiktoken 
-        
-        for i,text in enumerate(sentences):
-            #tokens = enc.encode(text, allowed_special={'<|endoftext|>'}) #tiktoken 
-            tokens = tokenizer.encode(text).ids  # Full sentence tokens (includes BOS/EOS)
+        for text in sentences:
+            tokens = tokenizer.encode(text).ids  # Includes BOS/EOS
             if not tokens:
-                print(f"Warning: Empty token list for sentence {i}: {text}")
-                tokens = [tokenizer.token_to_id("[PAD]")] * max_seq_len
-                #tokens = [pad_token_id] * max_seq_len # tiktoken 
+                tokens = [pad_id]  # Minimal pad for empty
+            all_input_ids.append(tokens[:-1])  # Inputs: BOS + text
+            all_labels.append(tokens[1:])      # Labels: text + EOS (shifted)
 
-            # Truncate to max_seq_len (keep BOS, drop tail if needed)
-            if len(tokens) > max_seq_len:
-                tokens = tokens[:max_seq_len]
-            # Pad to max_seq_len
-            tokens += [tokenizer.token_to_id("[PAD]")] * (max_seq_len - len(tokens))
+        # Find max len in this batch
+        max_len = max(max(len(ids) for ids in all_input_ids), max(len(labs) for labs in all_labels))
+        # Pad inputs and labels to max_len
+        for i in range(len(all_input_ids)):
+            all_input_ids[i] += [pad_id] * (max_len - len(all_input_ids[i]))
+            all_labels[i] += [pad_id] * (max_len - len(all_labels[i]))
 
-            #tokens += [pad_token_id] * (max_seq_len - len(tokens)) #tiktoken 
-
-            input_ids = tokens 
-            #labels = tokens[1:] + [pad_token_id]
-            labels = tokens[1:] + [tokenizer.token_to_id("[PAD]")]
-            all_input_ids.append(input_ids)
-            all_labels.append(labels)
-        
-        # Stack into tensors: (batch_size, max_seq_len)
         input_ids_tensor = torch.tensor(all_input_ids, dtype=torch.long).to(device)
         labels_tensor = torch.tensor(all_labels, dtype=torch.long).to(device)
-        
-        return {"input_ids": input_ids_tensor, "labels": labels_tensor}
-    
-
+        return {"input_ids": input_ids_tensor, "labels": labels_tensor} 
 
 
     if not isinstance(mha_params, dict):
@@ -106,7 +90,8 @@ def train(
     # Setup training instances.
     model = Transformer(vocab_size=vocab_size,mha_params=mha_params,N=N,block_dropout=0.2).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    criterion = nn.CrossEntropyLoss()
+    pad_id = tokenizer.token_to_id("[PAD]")
+    criterion = nn.CrossEntropyLoss(ignore_index=pad_id) # Ignores pad_id when calculatin loss. 
     os.makedirs('models/checkpoints',exist_ok=True)
     # Start training loop 
     for epoch in range(epochs):
