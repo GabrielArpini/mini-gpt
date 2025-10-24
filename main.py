@@ -107,7 +107,7 @@ def train(
     model = Transformer(vocab_size=vocab_size,mha_params=mha_params,N=N,block_dropout=0.2).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
-    os.makedirs('data/checkpoints',exist_ok=True)
+    os.makedirs('models/checkpoints',exist_ok=True)
     # Start training loop 
     for epoch in range(epochs):
         model.train()
