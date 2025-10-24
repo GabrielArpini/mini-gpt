@@ -34,7 +34,7 @@ def train(
     tokenizer: tokenizers.Tokenizer = None,
     N: int = 8,
     batch_size: int = 8,
-    max_seq_len: int = 400,
+    max_seq_len: int = 2000,
     test_size: int = 0.1,
     epochs: int = 20,
     lr=1e-4,
@@ -75,13 +75,21 @@ def train(
     #print(dataset_path)
 
     #dataset = load_dataset("iara-project/raw_dataset_with_embeddings_bert-base-portuguese-cased-nli-assin-2")
+    #try:
+    #   dataset = load_dataset("text",data_files="data/machado_texts.txt", encoding="utf-8")
+    #except Exception as e:
+    #   print(f"Error while loading dataset: {e}")
     try:
-        dataset = load_dataset("text",data_files="data/machado_texts.txt", encoding="utf-8")
+        dataset = load_dataset("dominguesm/wikipedia-ptbr-20230601")
+        print(f"Loaded Wikipedia dataset: {len(dataset)} examples")
     except Exception as e:
         print(f"Error while loading dataset: {e}")
-    dataset_splits = dataset['train'].train_test_split(test_size=test_size)
-    train_dataset = dataset_splits['train']
-    test_dataset = dataset_splits['test']
+        return None
+
+
+    #dataset_splits = dataset['train'].train_test_split(test_size=test_size)
+    train_dataset = dataset['train']
+    test_dataset = dataset['test']
 
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
@@ -109,9 +117,22 @@ def train(
             optimizer.step()
             total_loss += loss.item()
         avg_loss = total_loss / len(train_loader)
-        print(f"Epoch: {epoch+1}, AVG loss: {avg_loss:.4f}")
         if checkpoint:
             torch.save(model.state_dict(), f"models/checkpoints/epoch_{epoch}.pt")
+        
+        # Evaluation of epoch 
+        model.eval()
+        total_val_loss = 0
+        with torch.no_grad():
+            for batch in test_loader:
+                input_ids = batch['input_ids'].to(device)
+                target_labels = batch['labels'].to(device)
+                y_pred = model(input_ids)
+                loss = criterion(y_pred.view(-1, y_pred.size(-1)), target_labels.view(-1))
+                total_val_loss += loss.item()
+        avg_val_loss = total_val_loss / len(test_loader)
+        perplexity = torch.exp(torch.tensor(avh_val_loss)).item()
+        print(f"Epoch: {epoch+1}, AVG loss: {avg_loss:.4f} AVG Val loss: {avg_val_loss} Perplexity: {perplexity}")
     return model
 
 
@@ -151,7 +172,7 @@ def main():
 
     batch_size = 8
     d_model = 128
-    max_seq_len = 400
+    max_seq_len = 2000
     num_heads = 8
     dropout = 0.1
     N = 8
@@ -177,7 +198,7 @@ def main():
             vocab_size = vocab_size,
             tokenizer = tokenizer,
             batch_size = 8,
-            max_seq_len = 400,
+            max_seq_len = 2000,
             test_size = 0.1,
             epochs = 40,
             lr=1e-4,
