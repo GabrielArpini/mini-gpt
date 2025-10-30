@@ -42,7 +42,15 @@ class HyperParameters:
     max_new_tokens: int = 300 
     temperature: float = 0.7 # 0 <= x <= 1 
 
-
+def split_into_chunks(tokens, chunk_size=512, overlap=50):
+    chunks = []
+    current = 0 
+    step = chunk_size - overlap
+    while current < len(tokens):
+        chunk = tokens[current: current + chunk_size]
+        chunks.append(chunk)
+        current += step 
+    return chunks 
     
 def train(
     #enc, # encoder from tiktoken 
@@ -62,27 +70,41 @@ def train(
     # if it is outside i will need to use fn_kwargs inside map function
     # which gets messy easily.
     
+
+
     def collate_fn(batch):
-        sentences = [item['text'] for item in batch if item['text'].strip()]
+        bos_id = tokenizer.token_to_id("[BOS]")
+        eos_id = tokenizer.token_to_id("[EOS]")
+        pad_id = tokenizer.token_to_id("[PAD]")
         all_input_ids = []
         all_labels = []
-        for text in sentences:
-            tokens = tokenizer.encode(text).ids  # Includes BOS/EOS
-            if not tokens:
-                tokens = [pad_id]  # Minimal pad for empty
-            all_input_ids.append(tokens[:-1])  # Inputs: BOS + text
-            all_labels.append(tokens[1:])      # Labels: text + EOS (shifted)
 
-        # Find max len in this batch
-        max_len = max(max(len(ids) for ids in all_input_ids), max(len(labs) for labs in all_labels))
-        # Pad inputs and labels to max_len
-        for i in range(len(all_input_ids)):
-            all_input_ids[i] += [pad_id] * (max_len - len(all_input_ids[i]))
-            all_labels[i] += [pad_id] * (max_len - len(all_labels[i]))
+        for item in batch:
+            text = item['text']
+            tokens = tokenizer.encode(text).ids
+            # - 2 from eos and bos, that should not be included.
+            chunks = split_into_chunks(tokens, chunk_size=512 - 2 , overlap=50)
+            for chunk in chunks:
+                chunk_specials = [bos_id] + chunk + [eos_id] 
+                if len(chunk_specials) < max_seq_len:
+                    pad_quantity = max_seq_len - len(chunk_specials)
+                    chunk_specials += [pad_id] * pad_quantity
 
+                input_ids = chunk_specials[:-1]
+                labels = chunk_specials[1:]
+            
+                all_input_ids.append(input_ids)
+                all_labels.append(labels)
         input_ids_tensor = torch.tensor(all_input_ids, dtype=torch.long).to(device)
         labels_tensor = torch.tensor(all_labels, dtype=torch.long).to(device)
-        return {"input_ids": input_ids_tensor, "labels": labels_tensor} 
+
+        return {
+            "input_ids": input_ids_tensor,
+            "labels": labels_tensor
+        }
+                    
+
+
 
 
     if not isinstance(mha_params, dict):
@@ -109,7 +131,7 @@ def train(
     #test_dataset = dataset['test']
 
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
     
     # Setup training instances.
