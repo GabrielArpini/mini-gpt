@@ -19,9 +19,12 @@ import torch.nn as nn
 
 from dataclasses import dataclass
 
+from datetime import datetime
 
 import torch
 import torch.nn.functional as F 
+from torch.cuda.amp import autocast, GradScaler
+
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -30,7 +33,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class HyperParameters:
     N: int = 8
     batch_size: int = 8
-    max_seq_len: int = 5600
+    max_seq_len: int = 512
     test_size: float = 0.1 
     epochs: int = 20 
     lr: float = 1e-4 
@@ -131,33 +134,50 @@ def train(
     #test_dataset = dataset['test']
 
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn,num_workers=4, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
     
     # Setup training instances.
     model = Transformer(vocab_size=vocab_size,mha_params=mha_params,N=N,block_dropout=0.2).to(device)
+    print("Compiling model...")
+    model = torch.compile(model, mode='default')
+    print("Finished.")
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     pad_id = tokenizer.token_to_id("[PAD]")
     criterion = nn.CrossEntropyLoss(ignore_index=pad_id) # Ignores pad_id when calculatin loss. 
     os.makedirs('models/checkpoints',exist_ok=True)
     # Start training loop 
+    # Save now before training so every checkpoint can have the same exact time 
+    now = datetime.now()
+    
+    # Optimization with mixed precision 
+    scaler = GradScaler()
+
     for epoch in range(epochs):
         model.train()
         total_loss = 0
         for batch in train_loader:
             optimizer.zero_grad()
-            input_ids = batch['input_ids'].to(device)
-            target_labels = batch['labels']
-            y_pred = model(input_ids) 
-            loss = criterion(y_pred.view(-1, y_pred.size(-1)), target_labels.view(-1))
-            loss.backward()
-            # Maybe grad clip later 
+
+            # For mixed precision 
+            with autocast():
+
+                input_ids = batch['input_ids'].to(device)
+                target_labels = batch['labels']
+                y_pred = model(input_ids) 
+                loss = criterion(y_pred.view(-1, y_pred.size(-1)), target_labels.view(-1))
             
-            optimizer.step()
+            # For mixed precision 
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            
+            
             total_loss += loss.item()
         avg_loss = total_loss / len(train_loader)
         if checkpoint:
-            torch.save(model.state_dict(), f"models/checkpoints/epoch_{epoch}.pt")
+            torch.save(model.state_dict(), f"models/checkpoints/{now.year}_{now.month}_{now.day}_epoch_{epoch}.pt")
         
         # Evaluation of epoch 
         model.eval()
