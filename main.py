@@ -34,7 +34,7 @@ def train(
     tokenizer: tokenizers.Tokenizer = None,
     N: int = 8,
     batch_size: int = 8,
-    max_seq_len: int = 2000,
+    max_seq_len: int = 7000,
     test_size: int = 0.1,
     epochs: int = 20,
     lr=1e-4,
@@ -172,7 +172,7 @@ def main():
 
     batch_size = 8
     d_model = 128
-    max_seq_len = 2000
+    max_seq_len = 7000
     num_heads = 8
     dropout = 0.1
     N = 8
@@ -198,7 +198,7 @@ def main():
             vocab_size = vocab_size,
             tokenizer = tokenizer,
             batch_size = 8,
-            max_seq_len = 2000,
+            max_seq_len = 7000,
             test_size = 0.1,
             epochs = 40,
             lr=1e-4,
