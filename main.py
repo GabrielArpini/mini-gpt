@@ -17,6 +17,8 @@ from torch.utils.data import DataLoader
 import torch 
 import torch.nn as nn
 
+from dataclasses import dataclass
+
 
 import torch
 import torch.nn.functional as F 
@@ -24,6 +26,21 @@ torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+@dataclass 
+class HyperParameters:
+    N: int = 8
+    batch_size: int = 8
+    max_seq_len: int = 5600
+    test_size: float = 0.1 
+    epochs: int = 20 
+    lr: float = 1e-4 
+    checkpoint: bool = True
+    d_model: int = 128
+    num_heads: int = 8
+    dropout: float = 0.1 
+    vocab_size: int = 20_000
+    max_new_tokens: int = 300 
+    temperature: float = 0.7 # 0 <= x <= 1 
 
 
     
@@ -35,7 +52,7 @@ def train(
     N: int = 8,
     batch_size: int = 8,
     max_seq_len: int = 7000,
-    test_size: int = 0.1,
+    test_size = 0.1,
     epochs: int = 20,
     lr=1e-4,
     checkpoint=False 
@@ -80,16 +97,16 @@ def train(
     #except Exception as e:
     #   print(f"Error while loading dataset: {e}")
     try:
-        dataset = load_dataset("dominguesm/wikipedia-ptbr-20230601")
-        print(f"Loaded Wikipedia dataset: {len(dataset)} examples")
+        train_dataset, test_dataset = load_dataset("dominguesm/wikipedia-ptbr-20230601", split=['train[:60%]', 'test[:60%]']) 
+        #print(f"Loaded Wikipedia dataset: {len(dataset)} examples")
     except Exception as e:
         print(f"Error while loading dataset: {e}")
         return None
 
 
     #dataset_splits = dataset['train'].train_test_split(test_size=test_size)
-    train_dataset = dataset['train']
-    test_dataset = dataset['test']
+    #train_dataset = dataset['train']
+    #test_dataset = dataset['test']
 
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
@@ -143,6 +160,24 @@ def temperature_sampling(logits, temperature):
     return F.softmax(scaled_logits,dim=-1)
 
 def main():
+
+    # HYPERPARAMETERS
+    hp = HyperParameters()
+    batch_size = hp.batch_size
+    d_model = hp.batch_size 
+    max_seq_len = hp.max_seq_len 
+    num_heads = hp.num_heads
+    dropout = hp.dropout 
+    N = hp.N 
+    lr = hp.lr 
+    test_size = hp.test_size 
+    epochs = hp.epochs 
+    checkpoint = hp.checkpoint 
+    vocab_size = hp.vocab_size
+    max_new_tokens = hp.max_new_tokens 
+    temperature = hp.temperature 
+
+
     merges_path = 'data/merges.json'
     vocab_path = 'data/vocab.json'
     os.makedirs('data', exist_ok=True)
@@ -156,7 +191,7 @@ def main():
     if not os.path.exists(merges_path) or not os.path.exists(vocab_path):
         iterator = DatasetIterator()
         print("Starting tokenizer training...")
-        trainer = BpeTrainer(vocab_size=20000, special_tokens=special_tokens)
+        trainer = BpeTrainer(vocab_size=vocab_size, special_tokens=special_tokens)
         tokenizer.train_from_iterator(
             (item['sentence'] if isinstance(item, dict) and 'sentence' in item else item for item in iterator),
             trainer=trainer
@@ -168,16 +203,9 @@ def main():
         tokenizer = Tokenizer.from_file(vocab_path)
 
     vocab_size = tokenizer.get_vocab_size()
-    # HYPERPARAMETERS
+    
+    
 
-    batch_size = 8
-    d_model = 128
-    max_seq_len = 7000
-    num_heads = 8
-    dropout = 0.1
-    N = 8
-
-    #vocab_size = tokenizer.vocab_size
 
     
     mha_params = {
@@ -197,12 +225,12 @@ def main():
             mha_params = mha_params,
             vocab_size = vocab_size,
             tokenizer = tokenizer,
-            batch_size = 8,
-            max_seq_len = 7000,
-            test_size = 0.1,
-            epochs = 40,
-            lr=1e-4,
-            checkpoint=True
+            batch_size = batch_size,
+            max_seq_len = max_seq_len,
+            test_size = test_size,
+            epochs = epochs,
+            lr=lr,
+            checkpoint=checkpoint
         )
         torch.save(model.state_dict(), base_model_path)
     else:
@@ -227,7 +255,7 @@ def main():
     input_ids = torch.tensor(input_ids, dtype=torch.long).unsqueeze(0).to(device)  # Shape: [1, 400]
 
     generated_tokens = input_ids[0].tolist()  # Start with prompt tokens
-    max_new_tokens = 200
+
 
     with torch.no_grad():
         for _ in range(max_new_tokens):
@@ -235,7 +263,7 @@ def main():
             #logits[:, pad_id] = float('-inf')
             logits[:,tokenizer.token_to_id("[PAD]")] = float('-inf')
 
-            probs = temperature_sampling(logits, temperature=0.7)
+            probs = temperature_sampling(logits, temperature=temperature)
             next_token = torch.multinomial(probs,num_samples=1) # Random sampling.
             next_token = next_token.item()
 
