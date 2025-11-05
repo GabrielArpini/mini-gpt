@@ -28,6 +28,8 @@ from torch.cuda.amp import autocast, GradScaler
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+import os
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 @dataclass 
 class HyperParameters:
@@ -54,7 +56,13 @@ def split_into_chunks(tokens, chunk_size=512, overlap=50):
         chunks.append(chunk)
         current += step 
     return chunks 
-    
+  
+
+
+
+
+
+
 def train(
     #enc, # encoder from tiktoken 
     mha_params: dict,
@@ -62,7 +70,7 @@ def train(
     tokenizer: tokenizers.Tokenizer = None,
     N: int = 8,
     batch_size: int = 8,
-    max_seq_len: int = 7000,
+    max_seq_len: int = 1024,
     test_size = 0.1,
     epochs: int = 20,
     lr=1e-4,
@@ -76,6 +84,7 @@ def train(
 
 
     def collate_fn(batch):
+        MAX_CHUNKS_REMOVE_LATER = 3
         bos_id = tokenizer.token_to_id("[BOS]")
         eos_id = tokenizer.token_to_id("[EOS]")
         pad_id = tokenizer.token_to_id("[PAD]")
@@ -83,11 +92,16 @@ def train(
         all_labels = []
 
         for item in batch:
-            text = item['text']
+            text = item.get('text', '')
+            
+            # If text is bytes, decode with error handling
+            if isinstance(text, bytes):
+                text = text.decode('utf-8', errors='ignore')
+            
             tokens = tokenizer.encode(text).ids
             # - 2 from eos and bos, that should not be included.
             chunks = split_into_chunks(tokens, chunk_size=512 - 2 , overlap=50)
-            for chunk in chunks:
+            for chunk in chunks[:MAX_CHUNKS_REMOVE_LATER]:
                 chunk_specials = [bos_id] + chunk + [eos_id] 
                 if len(chunk_specials) < max_seq_len:
                     pad_quantity = max_seq_len - len(chunk_specials)
@@ -134,7 +148,7 @@ def train(
     #test_dataset = dataset['test']
 
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn,num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
     
     # Setup training instances.
@@ -206,7 +220,7 @@ def main():
     # HYPERPARAMETERS
     hp = HyperParameters()
     batch_size = hp.batch_size
-    d_model = hp.batch_size 
+    d_model = hp.d_model 
     max_seq_len = hp.max_seq_len 
     num_heads = hp.num_heads
     dropout = hp.dropout 
@@ -259,10 +273,10 @@ def main():
     
     base_model_path = "models/base_model.pt"
     os.makedirs("models", exist_ok=True)
-    model = Transformer(vocab_size=vocab_size, mha_params=mha_params, N=N, block_dropout=0.2).to(device)
+    #model = Transformer(vocab_size=vocab_size, mha_params=mha_params, N=N, block_dropout=0.2).to(device)
     if not os.path.exists(base_model_path):
         print("\n starting model training")
-
+        torch.cuda.empty_cache()
         model = train(
             mha_params = mha_params,
             vocab_size = vocab_size,
@@ -276,6 +290,8 @@ def main():
         )
         torch.save(model.state_dict(), base_model_path)
     else:
+        model = Transformer(vocab_size=vocab_size, mha_params=mha_params, N=N, block_dropout=0.2).to(device)
+
         if torch.cuda.is_available():
             state_dict = torch.load(base_model_path, weights_only=True)
         else:
