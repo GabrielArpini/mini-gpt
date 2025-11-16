@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "claude>=0.4.11",
     "datasets>=4.0.0",
     "kaggle>=1.7.4.5",
     "kagglehub>=0.3.13",
