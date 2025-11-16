@@ -1,36 +1,25 @@
-import unicodedata
-import nltk
-from nltk.tokenize import sent_tokenize
-from nltk.corpus import machado
+from datasets import load_dataset
 import os
-nltk.download('punkt', quiet=True)
-nltk.download('machado', quiet=True)
 
 class DatasetIterator:
     def __init__(self):
         os.makedirs('data', exist_ok=True)
-        data_file = "data/machado_texts.txt"
+        print("Loading C4 for tokenizer training...")
         try:
-            
-            raw_text = machado.raw()
-            if not raw_text:
-                raise ValueError("machado.raw() returned empty data. Ensure NLTK 'machado' corpus is downloaded.")
-            print(f"Loaded machado.raw(): {len(raw_text)} characters")
-            # Normalize text
-            normalized_text = unicodedata.normalize('NFC', raw_text).lower()
-            
-            self.data = sent_tokenize(normalized_text, language='portuguese')
-            print(f"Split into {len(self.data)} sentences")
-    
-            print(f"Saving dataset to {data_file}")
-            with open(data_file, "w", encoding="utf-8") as f:
-                for sentence in self.data:
-                    f.write(sentence + "\n")
-            print(f"Saved {os.path.getsize(data_file)} bytes to {data_file}")
+            self.dataset = load_dataset(
+                "allenai/c4",
+                "en",
+                split='train',
+                streaming=True,
+                trust_remote_code=False
+            ).take(100_000)
+            print("Dataset loaded for tokenizer training")
         except Exception as e:
-            print(f"Error in DatasetIterator: {e}")
-            self.data = []
+            print(f"Error loading dataset: {e}")
+            self.dataset = []
 
     def __iter__(self):
-        for item in self.data:
-            yield {'sentence': item} 
+        for item in self.dataset:
+            text = item.get('text', '')
+            if text and isinstance(text, str):
+                yield text 

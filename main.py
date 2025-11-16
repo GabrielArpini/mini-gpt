@@ -1,20 +1,20 @@
-from __future__ import annotations 
+from __future__ import annotations
 
 from datasets import load_dataset
-from utils import * 
+from utils import *
 import tokenizers
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
 from tokenizers.trainers import BpeTrainer
 from tokenizers.pre_tokenizers import Whitespace
 import tiktoken
-import os 
+import os
 from pos_encoding import RoPE
 from MultiHeadAttention import MultiHeadAttention
 from transformer import Transformer, TransformerBlock
 import kagglehub
 from torch.utils.data import DataLoader
-import torch 
+import torch
 import torch.nn as nn
 
 from dataclasses import dataclass
@@ -22,8 +22,10 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import torch
-import torch.nn.functional as F 
-from torch.cuda.amp import autocast, GradScaler
+import torch.nn.functional as F
+from torch.amp import autocast, GradScaler
+import glob
+import re
 
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -31,18 +33,18 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 import os
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
-@dataclass 
+@dataclass
 class HyperParameters:
     N: int = 8
-    batch_size: int = 8
+    batch_size: int = 6
     max_seq_len: int = 512
-    test_size: float = 0.1 
-    epochs: int = 20 
-    lr: float = 1e-4 
+    test_size: float = 0.1
+    epochs: int = 30
+    lr: float = 1e-4
     checkpoint: bool = True
-    d_model: int = 128
+    d_model: int = 512
     num_heads: int = 8
-    dropout: float = 0.1 
+    dropout: float = 0.1
     vocab_size: int = 20_000
     max_new_tokens: int = 300 
     temperature: float = 0.7 # 0 <= x <= 1 
@@ -64,7 +66,6 @@ def split_into_chunks(tokens, chunk_size=512, overlap=50):
 
 
 def train(
-    #enc, # encoder from tiktoken 
     mha_params: dict,
     vocab_size: int,
     tokenizer: tokenizers.Tokenizer = None,
@@ -74,44 +75,57 @@ def train(
     test_size = 0.1,
     epochs: int = 20,
     lr=1e-4,
-    checkpoint=False 
+    checkpoint=False,
+    start_epoch: int = 0,
+    initial_model = None
 ):
 
     # This function is inside train, because it needs the arguments
     # if it is outside i will need to use fn_kwargs inside map function
     # which gets messy easily.
     
-
-
     def collate_fn(batch):
-        MAX_CHUNKS_REMOVE_LATER = 3
         bos_id = tokenizer.token_to_id("[BOS]")
         eos_id = tokenizer.token_to_id("[EOS]")
         pad_id = tokenizer.token_to_id("[PAD]")
         all_input_ids = []
         all_labels = []
+        max_chunks = batch_size  # Limit total chunks to batch_size to control memory
 
         for item in batch:
-            text = item.get('text', '')
-            
-            # If text is bytes, decode with error handling
-            if isinstance(text, bytes):
-                text = text.decode('utf-8', errors='ignore')
-            
-            tokens = tokenizer.encode(text).ids
-            # - 2 from eos and bos, that should not be included.
-            chunks = split_into_chunks(tokens, chunk_size=512 - 2 , overlap=50)
-            for chunk in chunks[:MAX_CHUNKS_REMOVE_LATER]:
-                chunk_specials = [bos_id] + chunk + [eos_id] 
-                if len(chunk_specials) < max_seq_len:
-                    pad_quantity = max_seq_len - len(chunk_specials)
-                    chunk_specials += [pad_id] * pad_quantity
+            if len(all_input_ids) >= max_chunks:
+                break
 
-                input_ids = chunk_specials[:-1]
-                labels = chunk_specials[1:]
-            
-                all_input_ids.append(input_ids)
-                all_labels.append(labels)
+            try:
+                text = item['text']
+                if not isinstance(text, str):
+                    continue
+                tokens = tokenizer.encode(text).ids
+                # - 2 from eos and bos, that should not be included.
+                chunks = split_into_chunks(tokens, chunk_size=512 - 2 , overlap=50)
+
+                # Only take first chunk from each text to avoid memory explosion
+                for chunk in chunks[:1]:
+                    chunk_specials = [bos_id] + chunk + [eos_id]
+                    if len(chunk_specials) < max_seq_len:
+                        pad_quantity = max_seq_len - len(chunk_specials)
+                        chunk_specials += [pad_id] * pad_quantity
+
+                    input_ids = chunk_specials[:-1]
+                    labels = chunk_specials[1:]
+
+                    all_input_ids.append(input_ids)
+                    all_labels.append(labels)
+            except (UnicodeDecodeError, UnicodeError, Exception):
+                # Skip corrupted examples
+                continue
+
+        if len(all_input_ids) == 0:
+            # Return dummy batch if all examples were corrupted
+            dummy = [pad_id] * max_seq_len
+            all_input_ids = [dummy]
+            all_labels = [dummy]
+
         input_ids_tensor = torch.tensor(all_input_ids, dtype=torch.long).to(device)
         labels_tensor = torch.tensor(all_labels, dtype=torch.long).to(device)
 
@@ -119,7 +133,10 @@ def train(
             "input_ids": input_ids_tensor,
             "labels": labels_tensor
         }
-                    
+   
+
+
+
 
 
 
@@ -135,67 +152,95 @@ def train(
     #   dataset = load_dataset("text",data_files="data/machado_texts.txt", encoding="utf-8")
     #except Exception as e:
     #   print(f"Error while loading dataset: {e}")
-    try:
-        train_dataset, test_dataset = load_dataset("dominguesm/wikipedia-ptbr-20230601", split=['train[:60%]', 'test[:60%]']) 
-        #print(f"Loaded Wikipedia dataset: {len(dataset)} examples")
-    except Exception as e:
-        print(f"Error while loading dataset: {e}")
-        return None
+    
 
+    try:
+        print("Loading C4 dataset with streaming...")
+        num_train = 5_000_000
+        num_test = 100_000
+
+        def is_valid_example(example):
+            try:
+                text = example.get('text', '')
+                if not isinstance(text, str) or len(text) == 0:
+                    return False
+                text.encode('utf-8', errors='strict')
+                return True
+            except (UnicodeDecodeError, UnicodeError, Exception):
+                return False
+
+        train_dataset = load_dataset(
+            "allenai/c4",
+            "en",
+            split='train',
+            streaming=True,
+            trust_remote_code=False
+        ).filter(is_valid_example).shuffle(seed=42, buffer_size=10000).take(num_train)
+
+        test_dataset = load_dataset(
+            "allenai/c4",
+            "en",
+            split='validation',
+            streaming=True,
+            trust_remote_code=False
+        ).filter(is_valid_example).take(num_test)
+
+        print(f"Loaded streaming corpus: train={num_train:,}, test={num_test:,}")
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return None
 
     #dataset_splits = dataset['train'].train_test_split(test_size=test_size)
     #train_dataset = dataset['train']
     #test_dataset = dataset['test']
 
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
-    
-    # Setup training instances.
-    model = Transformer(vocab_size=vocab_size,mha_params=mha_params,N=N,block_dropout=0.2).to(device)
-    print("Compiling model...")
-    model = torch.compile(model, mode='default')
-    print("Finished.")
+
+    if initial_model is not None:
+        model = initial_model
+    else:
+        model = Transformer(vocab_size=vocab_size,mha_params=mha_params,N=N,block_dropout=0.2).to(device)
+        print("Compiling model...")
+        model = torch.compile(model, mode='default')
+        print("Finished.")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     pad_id = tokenizer.token_to_id("[PAD]")
-    criterion = nn.CrossEntropyLoss(ignore_index=pad_id) # Ignores pad_id when calculatin loss. 
+    criterion = nn.CrossEntropyLoss(ignore_index=pad_id)
     os.makedirs('models/checkpoints',exist_ok=True)
-    # Start training loop 
-    # Save now before training so every checkpoint can have the same exact time 
     now = datetime.now()
-    
-    # Optimization with mixed precision 
-    scaler = GradScaler()
 
-    for epoch in range(epochs):
+    scaler = GradScaler('cuda')
+
+    for epoch in range(start_epoch, epochs):
         model.train()
         total_loss = 0
+        num_batches = 0
         for batch in train_loader:
             optimizer.zero_grad()
 
-            # For mixed precision 
-            with autocast():
-
+            with autocast('cuda'):
                 input_ids = batch['input_ids'].to(device)
                 target_labels = batch['labels']
-                y_pred = model(input_ids) 
+                y_pred = model(input_ids)
                 loss = criterion(y_pred.view(-1, y_pred.size(-1)), target_labels.view(-1))
-            
-            # For mixed precision 
+
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
-            
-            
+
             total_loss += loss.item()
-        avg_loss = total_loss / len(train_loader)
+            num_batches += 1
+        avg_loss = total_loss / num_batches if num_batches > 0 else 0
         if checkpoint:
             torch.save(model.state_dict(), f"models/checkpoints/{now.year}_{now.month}_{now.day}_epoch_{epoch}.pt")
         
-        # Evaluation of epoch 
         model.eval()
         total_val_loss = 0
+        num_val_batches = 0
         with torch.no_grad():
             for batch in test_loader:
                 input_ids = batch['input_ids'].to(device)
@@ -203,8 +248,9 @@ def train(
                 y_pred = model(input_ids)
                 loss = criterion(y_pred.view(-1, y_pred.size(-1)), target_labels.view(-1))
                 total_val_loss += loss.item()
-        avg_val_loss = total_val_loss / len(test_loader)
-        perplexity = torch.exp(torch.tensor(avh_val_loss)).item()
+                num_val_batches += 1
+        avg_val_loss = total_val_loss / num_val_batches if num_val_batches > 0 else 0
+        perplexity = torch.exp(torch.tensor(avg_val_loss)).item()
         print(f"Epoch: {epoch+1}, AVG loss: {avg_loss:.4f} AVG Val loss: {avg_val_loss} Perplexity: {perplexity}")
     return model
 
@@ -248,10 +294,7 @@ def main():
         iterator = DatasetIterator()
         print("Starting tokenizer training...")
         trainer = BpeTrainer(vocab_size=vocab_size, special_tokens=special_tokens)
-        tokenizer.train_from_iterator(
-            (item['sentence'] if isinstance(item, dict) and 'sentence' in item else item for item in iterator),
-            trainer=trainer
-        )
+        tokenizer.train_from_iterator(iterator, trainer=trainer)
         tokenizer.save(vocab_path)
         print("Tokenizer successfully trained!")
     
@@ -273,35 +316,70 @@ def main():
     
     base_model_path = "models/base_model.pt"
     os.makedirs("models", exist_ok=True)
-    #model = Transformer(vocab_size=vocab_size, mha_params=mha_params, N=N, block_dropout=0.2).to(device)
-    if not os.path.exists(base_model_path):
-        print("\n starting model training")
-        torch.cuda.empty_cache()
-        model = train(
-            mha_params = mha_params,
-            vocab_size = vocab_size,
-            tokenizer = tokenizer,
-            batch_size = batch_size,
-            max_seq_len = max_seq_len,
-            test_size = test_size,
-            epochs = epochs,
-            lr=lr,
-            checkpoint=checkpoint
-        )
-        torch.save(model.state_dict(), base_model_path)
-    else:
-        model = Transformer(vocab_size=vocab_size, mha_params=mha_params, N=N, block_dropout=0.2).to(device)
+    os.makedirs("models/checkpoints", exist_ok=True)
 
+    start_epoch = 0
+    model = Transformer(vocab_size=vocab_size, mha_params=mha_params, N=N, block_dropout=0.2).to(device)
+
+    if not os.path.exists(base_model_path):
+        checkpoint_files = glob.glob("models/checkpoints/*_epoch_*.pt")
+        if checkpoint_files:
+            epoch_numbers = []
+            for f in checkpoint_files:
+                match = re.search(r'epoch_(\d+)\.pt$', f)
+                if match:
+                    epoch_numbers.append((int(match.group(1)), f))
+
+            if epoch_numbers:
+                latest_epoch, latest_checkpoint = max(epoch_numbers, key=lambda x: x[0])
+                print(f"Resuming from checkpoint: {latest_checkpoint} (epoch {latest_epoch})")
+
+                if torch.cuda.is_available():
+                    state_dict = torch.load(latest_checkpoint, weights_only=True)
+                else:
+                    state_dict = torch.load(latest_checkpoint, weights_only=True, map_location=torch.device('cpu'))
+
+                state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
+                model.load_state_dict(state_dict)
+                start_epoch = latest_epoch + 1
+
+        if start_epoch < epochs:
+            print(f"\nStarting training from epoch {start_epoch}")
+            torch.cuda.empty_cache()
+            print("Compiling model...")
+            model = torch.compile(model, mode='default')
+            print("Finished.")
+
+            model = train(
+                mha_params=mha_params,
+                vocab_size=vocab_size,
+                tokenizer=tokenizer,
+                batch_size=batch_size,
+                max_seq_len=max_seq_len,
+                test_size=test_size,
+                epochs=epochs,
+                lr=lr,
+                checkpoint=checkpoint,
+                start_epoch=start_epoch,
+                initial_model=model
+            )
+            if model is None:
+                print("Training failed. Model could not be created. Exiting.")
+                return
+            torch.save(model.state_dict(), base_model_path)
+        else:
+            print("Training already completed")
+    else:
         if torch.cuda.is_available():
             state_dict = torch.load(base_model_path, weights_only=True)
         else:
-            state_dict = torch.load(base_model_path,weights_only=True,map_location=torch.device('cpu'))
-
+            state_dict = torch.load(base_model_path, weights_only=True, map_location=torch.device('cpu'))
+        state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
         model.load_state_dict(state_dict)
    
     print("Testing model...")
     
-    prompt = "Brasil"
+    prompt = "The future of artificial intelligence"
     #input_ids = enc.encode(prompt)
     input_ids = tokenizer.encode(prompt).ids
 
