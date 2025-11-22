@@ -36,11 +36,12 @@ os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 @dataclass
 class HyperParameters:
     N: int = 8
-    batch_size: int = 32  # Increased from 6 for more stable gradients
+    batch_size: int = 8
+    accumulation_steps: int = 4
     max_seq_len: int = 512
     test_size: float = 0.1
-    epochs: int = 30
-    lr: float = 3e-4  # Increased from 1e-4 (standard for AdamW with transformers)
+    epochs: int = 10
+    lr: float = 3e-4
     checkpoint: bool = True
     d_model: int = 512
     num_heads: int = 8
@@ -79,7 +80,8 @@ def train(
     lr=1e-4,
     checkpoint=False,
     start_epoch: int = 0,
-    initial_model = None
+    initial_model = None,
+    accumulation_steps: int = 1
 ):
 
     # This function is inside train, because it needs the arguments
@@ -103,11 +105,12 @@ def train(
                 if not isinstance(text, str):
                     continue
                 tokens = tokenizer.encode(text).ids
-                # - 2 from eos and bos, that should not be included.
-                chunks = split_into_chunks(tokens, chunk_size=512 - 2 , overlap=50)
+                chunks = split_into_chunks(tokens, chunk_size=512 - 2, overlap=50)
 
-                # Only take first chunk from each text to avoid memory explosion
-                for chunk in chunks[:1]:
+                for chunk in chunks:
+                    if len(all_input_ids) >= max_chunks:
+                        break
+
                     chunk_specials = [bos_id] + chunk + [eos_id]
                     if len(chunk_specials) < max_seq_len:
                         pad_quantity = max_seq_len - len(chunk_specials)
@@ -158,8 +161,8 @@ def train(
 
     try:
         print("Loading C4 dataset with streaming...")
-        num_train = 5_000_000
-        num_test = 100_000
+        num_train = 1_000
+        num_test = 100
 
         def is_valid_example(example):
             try:
@@ -221,20 +224,22 @@ def train(
         model.train()
         total_loss = 0
         num_batches = 0
-        for batch in train_loader:
-            optimizer.zero_grad()
-
+        for i, batch in enumerate(train_loader):
             with autocast('cuda'):
                 input_ids = batch['input_ids'].to(device)
                 target_labels = batch['labels']
                 y_pred = model(input_ids)
                 loss = criterion(y_pred.view(-1, y_pred.size(-1)), target_labels.view(-1))
+                loss = loss / accumulation_steps
 
             scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
 
-            total_loss += loss.item()
+            if (i + 1) % accumulation_steps == 0:
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+
+            total_loss += loss.item() * accumulation_steps
             num_batches += 1
         avg_loss = total_loss / num_batches if num_batches > 0 else 0
         if checkpoint:
@@ -284,18 +289,18 @@ def top_p_filtering(logits, top_p):
 
 def main():
 
-    # HYPERPARAMETERS
     hp = HyperParameters()
     batch_size = hp.batch_size
-    d_model = hp.d_model 
-    max_seq_len = hp.max_seq_len 
+    accumulation_steps = hp.accumulation_steps
+    d_model = hp.d_model
+    max_seq_len = hp.max_seq_len
     num_heads = hp.num_heads
-    dropout = hp.dropout 
-    N = hp.N 
-    lr = hp.lr 
-    test_size = hp.test_size 
-    epochs = hp.epochs 
-    checkpoint = hp.checkpoint 
+    dropout = hp.dropout
+    N = hp.N
+    lr = hp.lr
+    test_size = hp.test_size
+    epochs = hp.epochs
+    checkpoint = hp.checkpoint
     vocab_size = hp.vocab_size
     max_new_tokens = hp.max_new_tokens
     temperature = hp.temperature
@@ -384,7 +389,8 @@ def main():
                 lr=lr,
                 checkpoint=checkpoint,
                 start_epoch=start_epoch,
-                initial_model=model
+                initial_model=model,
+                accumulation_steps=accumulation_steps
             )
             if model is None:
                 print("Training failed. Model could not be created. Exiting.")
