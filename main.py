@@ -36,18 +36,20 @@ os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 @dataclass
 class HyperParameters:
     N: int = 8
-    batch_size: int = 6
+    batch_size: int = 32  # Increased from 6 for more stable gradients
     max_seq_len: int = 512
     test_size: float = 0.1
     epochs: int = 30
-    lr: float = 1e-4
+    lr: float = 3e-4  # Increased from 1e-4 (standard for AdamW with transformers)
     checkpoint: bool = True
     d_model: int = 512
     num_heads: int = 8
     dropout: float = 0.1
     vocab_size: int = 20_000
-    max_new_tokens: int = 300 
-    temperature: float = 0.7 # 0 <= x <= 1 
+    max_new_tokens: int = 300
+    temperature: float = 0.8
+    top_k: int = 50
+    top_p: float = 0.95 
 
 def split_into_chunks(tokens, chunk_size=512, overlap=50):
     chunks = []
@@ -257,9 +259,28 @@ def train(
 
 
 def temperature_sampling(logits, temperature):
-    #P(token) = (e^{logits/T}) / sum{e^{logits/T}}
     scaled_logits = logits / temperature
-    return F.softmax(scaled_logits,dim=-1)
+    return F.softmax(scaled_logits, dim=-1)
+
+def top_k_filtering(logits, top_k):
+    if top_k > 0:
+        values, _ = torch.topk(logits, top_k, dim=-1)
+        min_value = values[:, -1].unsqueeze(-1)
+        logits = torch.where(logits < min_value, torch.tensor(float('-inf')).to(logits.device), logits)
+    return logits
+
+def top_p_filtering(logits, top_p):
+    if top_p > 0.0 and top_p < 1.0:
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
+        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+
+        sorted_indices_to_remove = cumulative_probs > top_p
+        sorted_indices_to_remove[:, 1:] = sorted_indices_to_remove[:, :-1].clone()
+        sorted_indices_to_remove[:, 0] = 0
+
+        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+        logits = logits.masked_fill(indices_to_remove, float('-inf'))
+    return logits
 
 def main():
 
@@ -276,8 +297,10 @@ def main():
     epochs = hp.epochs 
     checkpoint = hp.checkpoint 
     vocab_size = hp.vocab_size
-    max_new_tokens = hp.max_new_tokens 
-    temperature = hp.temperature 
+    max_new_tokens = hp.max_new_tokens
+    temperature = hp.temperature
+    top_k = hp.top_k
+    top_p = hp.top_p
 
 
     merges_path = 'data/merges.json'
@@ -395,16 +418,17 @@ def main():
 
     with torch.no_grad():
         for _ in range(max_new_tokens):
-            logits = model(input_ids)[:, -1, :]  # Logits for last token: [1, vocab_size]
-            #logits[:, pad_id] = float('-inf')
-            logits[:,tokenizer.token_to_id("[PAD]")] = float('-inf')
+            logits = model(input_ids)[:, -1, :]
+            logits[:, tokenizer.token_to_id("[PAD]")] = float('-inf')
 
+            logits = top_k_filtering(logits, top_k)
+            logits = top_p_filtering(logits, top_p)
             probs = temperature_sampling(logits, temperature=temperature)
-            next_token = torch.multinomial(probs,num_samples=1) # Random sampling.
+
+            next_token = torch.multinomial(probs, num_samples=1)
             next_token = next_token.item()
 
             generated_tokens.append(next_token)
-            # Update input_ids with new token
             input_ids = torch.tensor(generated_tokens[-max_seq_len:], dtype=torch.long).unsqueeze(0).to(device)
     
     #generated_text = enc.decode(generated_tokens)
