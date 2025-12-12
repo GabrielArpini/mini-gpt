@@ -40,7 +40,7 @@ class HyperParameters:
     accumulation_steps: int = 4
     max_seq_len: int = 512
     test_size: float = 0.1
-    epochs: int = 10
+    epochs: int = 5
     lr: float = 3e-4
     checkpoint: bool = True
     d_model: int = 512
@@ -84,52 +84,24 @@ def train(
     accumulation_steps: int = 1
 ):
 
-    # This function is inside train, because it needs the arguments
-    # if it is outside i will need to use fn_kwargs inside map function
-    # which gets messy easily.
-    
+    # Simplified collate function for pre-tokenized data
     def collate_fn(batch):
-        bos_id = tokenizer.token_to_id("[BOS]")
-        eos_id = tokenizer.token_to_id("[EOS]")
         pad_id = tokenizer.token_to_id("[PAD]")
         all_input_ids = []
         all_labels = []
-        max_chunks = batch_size  # Limit total chunks to batch_size to control memory
 
         for item in batch:
-            if len(all_input_ids) >= max_chunks:
-                break
+            input_ids = item['input_ids']
+            labels = item['labels']
 
-            try:
-                text = item['text']
-                if not isinstance(text, str):
-                    continue
-                tokens = tokenizer.encode(text).ids
-                chunks = split_into_chunks(tokens, chunk_size=512 - 2, overlap=50)
+            # Pad to max_seq_len if needed
+            if len(input_ids) < max_seq_len:
+                pad_quantity = max_seq_len - len(input_ids)
+                input_ids = input_ids + [pad_id] * pad_quantity
+                labels = labels + [pad_id] * pad_quantity
 
-                for chunk in chunks:
-                    if len(all_input_ids) >= max_chunks:
-                        break
-
-                    chunk_specials = [bos_id] + chunk + [eos_id]
-                    if len(chunk_specials) < max_seq_len:
-                        pad_quantity = max_seq_len - len(chunk_specials)
-                        chunk_specials += [pad_id] * pad_quantity
-
-                    input_ids = chunk_specials[:-1]
-                    labels = chunk_specials[1:]
-
-                    all_input_ids.append(input_ids)
-                    all_labels.append(labels)
-            except (UnicodeDecodeError, UnicodeError, Exception):
-                # Skip corrupted examples
-                continue
-
-        if len(all_input_ids) == 0:
-            # Return dummy batch if all examples were corrupted
-            dummy = [pad_id] * max_seq_len
-            all_input_ids = [dummy]
-            all_labels = [dummy]
+            all_input_ids.append(input_ids[:max_seq_len])
+            all_labels.append(labels[:max_seq_len])
 
         input_ids_tensor = torch.tensor(all_input_ids, dtype=torch.long).to(device)
         labels_tensor = torch.tensor(all_labels, dtype=torch.long).to(device)
@@ -159,41 +131,29 @@ def train(
     #   print(f"Error while loading dataset: {e}")
     
 
+    # Load preprocessed dataset from disk
     try:
-        print("Loading C4 dataset with streaming...")
-        num_train = 1_000
-        num_test = 100
+        from datasets import load_from_disk
 
-        def is_valid_example(example):
-            try:
-                text = example.get('text', '')
-                if not isinstance(text, str) or len(text) == 0:
-                    return False
-                text.encode('utf-8', errors='strict')
-                return True
-            except (UnicodeDecodeError, UnicodeError, Exception):
-                return False
+        preprocessed_dir = "data/preprocessed"
+        train_path = f"{preprocessed_dir}/train"
+        test_path = f"{preprocessed_dir}/test"
 
-        train_dataset = load_dataset(
-            "allenai/c4",
-            "en",
-            split='train',
-            streaming=True,
-            trust_remote_code=False
-        ).filter(is_valid_example).shuffle(seed=42, buffer_size=10000).take(num_train)
+        if not os.path.exists(train_path) or not os.path.exists(test_path):
+            print(f"ERROR: Preprocessed dataset not found at {preprocessed_dir}")
+            print("Please run 'python preprocess_dataset.py' first to create the preprocessed dataset.")
+            return None
 
-        test_dataset = load_dataset(
-            "allenai/c4",
-            "en",
-            split='validation',
-            streaming=True,
-            trust_remote_code=False
-        ).filter(is_valid_example).take(num_test)
+        print("Loading preprocessed C4 dataset from disk...")
+        train_dataset = load_from_disk(train_path)
+        test_dataset = load_from_disk(test_path)
 
-        print(f"Loaded streaming corpus: train={num_train:,}, test={num_test:,}")
+        print(f"Loaded preprocessed dataset:")
+        print(f"  Train chunks: {len(train_dataset):,}")
+        print(f"  Test chunks: {len(test_dataset):,}")
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error loading preprocessed dataset: {e}")
         return None
 
     #dataset_splits = dataset['train'].train_test_split(test_size=test_size)
@@ -201,7 +161,8 @@ def train(
     #test_dataset = dataset['test']
 
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+    # Shuffle train data for better training, no shuffle for test
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
 
     if initial_model is not None:
