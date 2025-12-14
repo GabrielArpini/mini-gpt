@@ -161,8 +161,8 @@ def preprocess_dataset(
 if __name__ == "__main__":
     # Adjust these parameters as needed
     preprocess_dataset(
-        num_train=20_000,      # Start with 20k for faster experiments
-        num_test=2_000,        # 10% of train
+        num_train=100_000,     # Increased from 20k to 100k (5x more data)
+        num_test=10_000,       # 10% of train
         vocab_size=20_000,
         chunk_size=512,
         overlap=50
