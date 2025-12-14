@@ -27,6 +27,10 @@ from torch.amp import autocast, GradScaler
 import glob
 import re
 
+from torch.utils.tensorboard import SummaryWriter
+writer = SummaryWriter()
+
+
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -40,17 +44,17 @@ class HyperParameters:
     accumulation_steps: int = 4
     max_seq_len: int = 512
     test_size: float = 0.1
-    epochs: int = 5
-    lr: float = 3e-4
+    epochs: int = 20  
+    lr: float = 6e-4  # Slightly increased from 3e-4, scheduler will handle warmup
     checkpoint: bool = True
     d_model: int = 512
     num_heads: int = 8
     dropout: float = 0.1
     vocab_size: int = 20_000
     max_new_tokens: int = 300
-    temperature: float = 0.8
+    temperature: float = 1.0  # Increased from 0.8 for more diversity
     top_k: int = 50
-    top_p: float = 0.95 
+    top_p: float = 0.9  # Slightly reduced from 0.95 for less randomness 
 
 def split_into_chunks(tokens, chunk_size=512, overlap=50):
     chunks = []
@@ -173,14 +177,25 @@ def train(
         model = torch.compile(model, mode='default')
         print("Finished.")
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.1)
     pad_id = tokenizer.token_to_id("[PAD]")
     criterion = nn.CrossEntropyLoss(ignore_index=pad_id)
+
+    # Add learning rate scheduler with warmup
+    num_training_steps = epochs * len(train_loader)
+    num_warmup_steps = int(0.1 * num_training_steps)  # 10% warmup
+
+    def lr_lambda(current_step):
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        return max(0.0, float(num_training_steps - current_step) / float(max(1, num_training_steps - num_warmup_steps)))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     os.makedirs('models/checkpoints',exist_ok=True)
     now = datetime.now()
 
     scaler = GradScaler('cuda')
-
+    print("First run will take a bit longer...")
     for epoch in range(start_epoch, epochs):
         model.train()
         total_loss = 0
@@ -196,13 +211,38 @@ def train(
             scaler.scale(loss).backward()
 
             if (i + 1) % accumulation_steps == 0:
+                # Unscale gradients for clipping
+                scaler.unscale_(optimizer)
+
+                # Calculate gradient norm before clipping
+                total_norm = 0
+                for p in model.parameters():
+                    if p.grad is not None:
+                        total_norm += p.grad.data.norm(2).item() ** 2
+                total_norm = total_norm ** 0.5
+
+                # Clip gradients
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+                # Log gradient norm
+                global_step = epoch * len(train_loader) + i
+                writer.add_scalar("Gradients/norm", total_norm, global_step)
+
                 scaler.step(optimizer)
                 scaler.update()
+                scheduler.step()  # Update learning rate
                 optimizer.zero_grad()
 
             total_loss += loss.item() * accumulation_steps
             num_batches += 1
+
+            # Log batch-level loss every 100 batches
+            if i % 100 == 0:
+                global_step = epoch * len(train_loader) + i
+                writer.add_scalar("Loss/batch", loss.item() * accumulation_steps, global_step)
         avg_loss = total_loss / num_batches if num_batches > 0 else 0
+        writer.add_scalar("AvgLoss/train", avg_loss, epoch)
+        writer.add_scalar("LR", optimizer.param_groups[0]['lr'], epoch)
         if checkpoint:
             torch.save(model.state_dict(), f"models/checkpoints/{now.year}_{now.month}_{now.day}_epoch_{epoch}.pt")
         
@@ -218,8 +258,14 @@ def train(
                 total_val_loss += loss.item()
                 num_val_batches += 1
         avg_val_loss = total_val_loss / num_val_batches if num_val_batches > 0 else 0
+        writer.add_scalar("AvgValLoss/val", avg_val_loss, epoch)
         perplexity = torch.exp(torch.tensor(avg_val_loss)).item()
+        writer.add_scalar("Perplexity", perplexity, epoch)
         print(f"Epoch: {epoch+1}, AVG loss: {avg_loss:.4f} AVG Val loss: {avg_val_loss} Perplexity: {perplexity}")
+    
+
+    writer.close()
+    writer.flush()
     return model
 
 
@@ -366,7 +412,8 @@ def main():
             state_dict = torch.load(base_model_path, weights_only=True, map_location=torch.device('cpu'))
         state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
         model.load_state_dict(state_dict)
-   
+    
+
     print("Testing model...")
     
     prompt = "The future of artificial intelligence"
