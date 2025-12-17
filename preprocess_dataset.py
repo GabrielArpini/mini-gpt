@@ -27,9 +27,9 @@ def split_into_chunks(tokens, chunk_size=512, overlap=50):
 
 
 def preprocess_dataset(
-    num_train: int = 100_000,
-    num_test: int = 10_000,
-    vocab_size: int = 20_000,
+    num_train: int = 150_000,
+    num_test: int = 15_000,
+    vocab_size: int = 30_000,
     chunk_size: int = 512,
     overlap: int = 50,
     output_dir: str = "data/preprocessed"
@@ -107,6 +107,9 @@ def preprocess_dataset(
 
         all_input_ids = []
         all_labels = []
+        min_chunk_length = int(0.6 * (chunk_size - 2))  # Require chunks to be at least 60% of max length
+        total_chunks = 0
+        filtered_chunks = 0
 
         for example in tqdm(dataset, total=num_examples, desc=f"Tokenizing {split_name}"):
             try:
@@ -121,6 +124,13 @@ def preprocess_dataset(
                 chunks = split_into_chunks(tokens, chunk_size=chunk_size - 2, overlap=overlap)
 
                 for chunk in chunks:
+                    total_chunks += 1
+
+                    # Filter out short chunks to avoid excessive padding
+                    if len(chunk) < min_chunk_length:
+                        filtered_chunks += 1
+                        continue
+
                     # Add BOS and EOS
                     chunk_with_specials = [bos_id] + chunk + [eos_id]
 
@@ -135,6 +145,8 @@ def preprocess_dataset(
                 continue
 
         print(f"{split_name} split: {len(all_input_ids):,} chunks created from {num_examples:,} examples")
+        print(f"  Filtered out {filtered_chunks:,}/{total_chunks:,} short chunks ({filtered_chunks/total_chunks*100:.1f}%)")
+        print(f"  Min chunk length: {min_chunk_length} tokens")
 
         # Create HuggingFace Dataset
         return Dataset.from_dict({
@@ -166,9 +178,9 @@ def preprocess_dataset(
 if __name__ == "__main__":
     # Adjust these parameters as needed
     preprocess_dataset(
-        num_train=100_000,     # Increased from 20k to 100k (5x more data)
-        num_test=10_000,       # 10% of train
-        vocab_size=20_000,
+        num_train=10_000,     
+        num_test=1_000,       # 10% of train
+        vocab_size=30_000,
         chunk_size=512,
         overlap=50
     )
