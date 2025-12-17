@@ -146,7 +146,7 @@ def train(
             print("Please run 'python preprocess_dataset.py' first to create the preprocessed dataset.")
             return None
 
-        print("Loading preprocessed C4 dataset from disk...")
+        print("Loading preprocessed dataset from disk...")
         train_dataset = load_from_disk(train_path)
         test_dataset = load_from_disk(test_path)
 
