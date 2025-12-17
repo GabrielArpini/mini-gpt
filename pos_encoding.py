@@ -31,8 +31,9 @@ class RoPE(nn.Module):
 
         angle_grid = pos_indices_vec * theta_i
 
-        self.sin_angles = torch.sin(angle_grid)
-        self.cos_angles = torch.cos(angle_grid)
+        # Register as buffers so they move to device automatically with model.to(device)
+        self.register_buffer('sin_angles', torch.sin(angle_grid))
+        self.register_buffer('cos_angles', torch.cos(angle_grid))
 
     def forward(self,x):
         """
