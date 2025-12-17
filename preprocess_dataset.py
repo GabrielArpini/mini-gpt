@@ -1,5 +1,5 @@
 """
-Pre-tokenize and save C4 dataset locally for faster training.
+Pre-tokenize and save FineWeb-Edu dataset locally for faster training.
 This script will download, tokenize, chunk, and save the dataset to disk.
 """
 from __future__ import annotations
@@ -35,7 +35,7 @@ def preprocess_dataset(
     output_dir: str = "data/preprocessed"
 ):
     """
-    Download, tokenize, and save C4 dataset.
+    Download, tokenize, and save FineWeb-Edu dataset.
 
     Args:
         num_train: Number of training examples to process
@@ -70,7 +70,7 @@ def preprocess_dataset(
     bos_id = tokenizer.token_to_id("[BOS]")
     eos_id = tokenizer.token_to_id("[EOS]")
 
-    print(f"\nPreprocessing C4 dataset...")
+    print(f"\nPreprocessing FineWeb-Edu dataset...")
     print(f"Train examples: {num_train:,}")
     print(f"Test examples: {num_test:,}")
     print(f"Chunk size: {chunk_size} (including BOS/EOS)")
@@ -87,18 +87,23 @@ def preprocess_dataset(
         except (UnicodeDecodeError, UnicodeError, Exception):
             return False
 
-    def process_split(split_name, num_examples, hf_split):
+    def process_split(split_name, num_examples, num_train_to_skip=0):
         """Process a dataset split and return tokenized chunks."""
         print(f"\nProcessing {split_name} split...")
 
-        # Load streaming dataset
+        # Load streaming dataset (fineweb-edu only has 'train' split)
         dataset = load_dataset(
-            "allenai/c4",
-            "en",
-            split=hf_split,
+            "karpathy/fineweb-edu-100b-shuffle",
+            split='train',
             streaming=True,
             trust_remote_code=False
-        ).filter(is_valid_example).shuffle(seed=42, buffer_size=10000).take(num_examples)
+        )
+
+        # Skip training examples for validation split (non-overlapping)
+        if num_train_to_skip > 0:
+            dataset = dataset.skip(num_train_to_skip)
+
+        dataset = dataset.take(num_examples)
 
         all_input_ids = []
         all_labels = []
@@ -137,9 +142,9 @@ def preprocess_dataset(
             'labels': all_labels
         })
 
-    # Process train and test splits
-    train_dataset = process_split('train', num_train, 'train')
-    test_dataset = process_split('validation', num_test, 'validation')
+    # Process train and test splits (non-overlapping from same dataset)
+    train_dataset = process_split('train', num_train, num_train_to_skip=0)
+    test_dataset = process_split('validation', num_test, num_train_to_skip=num_train)
 
     # Save to disk
     train_path = os.path.join(output_dir, 'train')
