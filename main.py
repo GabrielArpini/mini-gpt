@@ -30,12 +30,15 @@ import re
 from torch.utils.tensorboard import SummaryWriter
 writer = SummaryWriter()
 
+from time import time
+
 
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 import os
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'  # Disable tokenizers parallelism to avoid fork issues
 
 @dataclass
 class HyperParameters:
@@ -44,17 +47,17 @@ class HyperParameters:
     accumulation_steps: int = 4
     max_seq_len: int = 512
     test_size: float = 0.1
-    epochs: int = 20  
+    epochs: int = 10  
     lr: float = 6e-4  # Slightly increased from 3e-4, scheduler will handle warmup
-    checkpoint: bool = True
+    checkpoint: bool = False
     d_model: int = 512
     num_heads: int = 8
     dropout: float = 0.1
     vocab_size: int = 20_000
     max_new_tokens: int = 300
-    temperature: float = 1.0  # Increased from 0.8 for more diversity
+    temperature: float = 0.8  
     top_k: int = 50
-    top_p: float = 0.9  # Slightly reduced from 0.95 for less randomness 
+    top_p: float = 0.95  
 
 def split_into_chunks(tokens, chunk_size=512, overlap=50):
     chunks = []
@@ -71,7 +74,6 @@ def split_into_chunks(tokens, chunk_size=512, overlap=50):
 
 
 
-
 def train(
     mha_params: dict,
     vocab_size: int,
@@ -80,7 +82,7 @@ def train(
     batch_size: int = 8,
     max_seq_len: int = 1024,
     test_size = 0.1,
-    epochs: int = 20,
+    epochs: int = 10,
     lr=1e-4,
     checkpoint=False,
     start_epoch: int = 0,
@@ -107,20 +109,16 @@ def train(
             all_input_ids.append(input_ids[:max_seq_len])
             all_labels.append(labels[:max_seq_len])
 
-        input_ids_tensor = torch.tensor(all_input_ids, dtype=torch.long).to(device)
-        labels_tensor = torch.tensor(all_labels, dtype=torch.long).to(device)
+        # Create tensors on CPU (worker processes can't use CUDA)
+        # Training loop will move to GPU
+        input_ids_tensor = torch.tensor(all_input_ids, dtype=torch.long)
+        labels_tensor = torch.tensor(all_labels, dtype=torch.long)
 
         return {
             "input_ids": input_ids_tensor,
             "labels": labels_tensor
         }
    
-
-
-
-
-
-
 
     if not isinstance(mha_params, dict):
         raise TypeError(f"Expected mha_params to be a dict, got {type(mha_params)}: {mha_params}") 
@@ -174,7 +172,7 @@ def train(
     else:
         model = Transformer(vocab_size=vocab_size,mha_params=mha_params,N=N,block_dropout=0.2).to(device)
         print("Compiling model...")
-        model = torch.compile(model, mode='default')
+        model = torch.compile(model, mode='reduce-overhead')
         print("Finished.")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.1)
@@ -196,14 +194,21 @@ def train(
 
     scaler = GradScaler('cuda')
     print("First run will take a bit longer...")
+
+    # Start timing total training
+    training_start_time = time()
+
     for epoch in range(start_epoch, epochs):
+        # Start timing this epoch
+        epoch_start_time = time()
+
         model.train()
         total_loss = 0
         num_batches = 0
         for i, batch in enumerate(train_loader):
             with autocast('cuda'):
                 input_ids = batch['input_ids'].to(device)
-                target_labels = batch['labels']
+                target_labels = batch['labels'].to(device)
                 y_pred = model(input_ids)
                 loss = criterion(y_pred.view(-1, y_pred.size(-1)), target_labels.view(-1))
                 loss = loss / accumulation_steps
@@ -261,8 +266,18 @@ def train(
         writer.add_scalar("AvgValLoss/val", avg_val_loss, epoch)
         perplexity = torch.exp(torch.tensor(avg_val_loss)).item()
         writer.add_scalar("Perplexity", perplexity, epoch)
-        print(f"Epoch: {epoch+1}, AVG loss: {avg_loss:.4f} AVG Val loss: {avg_val_loss} Perplexity: {perplexity}")
-    
+
+        # Calculate and log epoch time
+        epoch_time_minutes = (time() - epoch_start_time) / 60
+        writer.add_scalar("Time/epoch_minutes", epoch_time_minutes, epoch)
+
+        print(f"Epoch: {epoch+1}, AVG loss: {avg_loss:.4f} AVG Val loss: {avg_val_loss} Perplexity: {perplexity} Time: {epoch_time_minutes:.2f}m")
+
+    # Calculate and log total training time
+    total_training_minutes = (time() - training_start_time) / 60
+    writer.add_scalar("Time/total_training_minutes", total_training_minutes, epochs - 1)
+
+    print(f"\nTotal training time: {total_training_minutes:.2f} minutes ({total_training_minutes/60:.2f} hours)")
 
     writer.close()
     writer.flush()
@@ -381,9 +396,9 @@ def main():
         if start_epoch < epochs:
             print(f"\nStarting training from epoch {start_epoch}")
             torch.cuda.empty_cache()
-            print("Compiling model...")
-            model = torch.compile(model, mode='default')
-            print("Finished.")
+            print("Compiling model (first epoch will be slower)...")
+            model = torch.compile(model, mode='max-autotune')
+            print("Compilation finished.")
 
             model = train(
                 mha_params=mha_params,
@@ -416,7 +431,7 @@ def main():
 
     print("Testing model...")
     
-    prompt = "The future of artificial intelligence"
+    prompt = "The future of artificial intelligence is "
     #input_ids = enc.encode(prompt)
     input_ids = tokenizer.encode(prompt).ids
 
