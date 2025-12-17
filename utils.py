@@ -4,11 +4,10 @@ import os
 class DatasetIterator:
     def __init__(self):
         os.makedirs('data', exist_ok=True)
-        print("Loading C4 for tokenizer training...")
+        print("Loading fineweb-edu for tokenizer training...")
         try:
             self.dataset = load_dataset(
-                "allenai/c4",
-                "en",
+                "karpathy/fineweb-edu-100b-shuffle",
                 split='train',
                 streaming=True,
                 trust_remote_code=False
