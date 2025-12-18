@@ -171,9 +171,6 @@ def train(
         model = initial_model
     else:
         model = Transformer(vocab_size=vocab_size,mha_params=mha_params,N=N,block_dropout=0.2).to(device)
-        print("Compiling model...")
-        model = torch.compile(model, mode='reduce-overhead')
-        print("Finished.")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.1)
     pad_id = tokenizer.token_to_id("[PAD]")
@@ -397,7 +394,7 @@ def main():
             print(f"\nStarting training from epoch {start_epoch}")
             torch.cuda.empty_cache()
             print("Compiling model (first epoch will be slower)...")
-            model = torch.compile(model, mode='max-autotune')
+            model = torch.compile(model, options={'triton.cudagraphs': False}) # Cant add mode, otherwise it will raise RuntimeError.
             print("Compilation finished.")
 
             model = train(
