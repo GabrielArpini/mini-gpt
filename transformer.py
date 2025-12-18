@@ -1,11 +1,35 @@
 from __future__ import annotations
 
 import torch
-import torch.nn as nn 
+import torch.nn as nn
+import torch.nn.functional as F
 from MultiHeadAttention import MultiHeadAttention
 from pos_encoding import RoPE
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+class SwiGLU(nn.Module):
+    """
+    A standard SwiGLU FFN implementation.
+    Reference: Noam Shazeer's "GLU Variants Improve Transformer"
+    (https://arxiv.org/abs/2002.05202)
+    """
+    def __init__(self, d_model: int, d_ffn: int):
+        super().__init__()
+        # The SwiGLU paper recommends the hidden dimension be 2/3 of the FFN dimension
+        hidden_dim = int(2 * d_ffn / 3)
+
+        self.w1 = nn.Linear(d_model, hidden_dim, bias=False)
+        self.w2 = nn.Linear(d_model, hidden_dim, bias=False)
+        self.w3 = nn.Linear(hidden_dim, d_model, bias=False)
+
+    def forward(self, x: torch.Tensor):
+        # First linear projection for the gate, activated by SiLU (Swish)
+        gate = F.silu(self.w1(x))
+        # Second linear projection for the data
+        data = self.w2(x)
+        # Element-wise multiplication, followed by the final projection
+        return self.w3(gate * data)
 
 class TransformerBlock(nn.Module):
     """Block to be iterated N times"""
@@ -17,23 +41,17 @@ class TransformerBlock(nn.Module):
             dropout: percentage of dropout, default 0.
         """
         super(TransformerBlock,self).__init__()
-        self.mha = mha 
+        self.mha = mha
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
-        
-        # Feed Forward 
-        self.ff = nn.Sequential(
-            nn.Linear(d_model,4*d_model),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(4*d_model, d_model)
-        )
-        self.dropout = dropout 
+
+        self.ff = SwiGLU(d_model, 4*d_model)
+        self.dropout = nn.Dropout(dropout) 
         
     
     def forward(self,x):
-        x = x + self.mha(self.norm1(x)) # First residual 
-        x = x + self.ff(self.norm2(x)) # Second Residual
+        x = x + self.mha(self.norm1(x))
+        x = x + self.dropout(self.ff(self.norm2(x)))
         return x 
 
 class Transformer(nn.Module):
@@ -59,7 +77,7 @@ class Transformer(nn.Module):
             nn.Linear(self.d_model,vocab_size)
         ).to(device)
     def forward(self, x):
-        x = self.embedding(x)
+        x = self.embedding(x).clone() # Fix torch.compile error 
         for block in self.blocklist:
             x = block(x)
         x = self.final_layer(x)
