@@ -87,8 +87,8 @@ def preprocess_dataset(
         except (UnicodeDecodeError, UnicodeError, Exception):
             return False
 
-    def process_split(split_name, num_examples, num_train_to_skip=0):
-        """Process a dataset split and return tokenized chunks."""
+    def process_split(split_name, num_examples, save_path, num_train_to_skip=0):
+        """Process a dataset split and save directly to disk in batches."""
         print(f"\nProcessing {split_name} split...")
 
         # Load streaming dataset (fineweb-edu only has 'train' split)
@@ -105,11 +105,15 @@ def preprocess_dataset(
 
         dataset = dataset.take(num_examples)
 
-        all_input_ids = []
-        all_labels = []
         min_chunk_length = int(0.6 * (chunk_size - 2))  # Require chunks to be at least 60% of max length
         total_chunks = 0
         filtered_chunks = 0
+
+        # Process and save in batches to avoid OOM
+        batch_size = 50000  # Save every 50k chunks
+        batch_input_ids = []
+        batch_labels = []
+        batch_datasets = []
 
         for example in tqdm(dataset, total=num_examples, desc=f"Tokenizing {split_name}"):
             try:
@@ -138,35 +142,63 @@ def preprocess_dataset(
                     input_ids = chunk_with_specials[:-1]
                     labels = chunk_with_specials[1:]
 
-                    all_input_ids.append(input_ids)
-                    all_labels.append(labels)
+                    batch_input_ids.append(input_ids)
+                    batch_labels.append(labels)
+
+                    # Save batch when it reaches batch_size
+                    if len(batch_input_ids) >= batch_size:
+                        batch_dataset = Dataset.from_dict({
+                            'input_ids': batch_input_ids,
+                            'labels': batch_labels
+                        })
+                        batch_datasets.append(batch_dataset)
+                        batch_input_ids = []
+                        batch_labels = []
 
             except (UnicodeDecodeError, UnicodeError, Exception) as e:
                 continue
 
-        print(f"{split_name} split: {len(all_input_ids):,} chunks created from {num_examples:,} examples")
+        # Save remaining chunks in final batch
+        if len(batch_input_ids) > 0:
+            batch_dataset = Dataset.from_dict({
+                'input_ids': batch_input_ids,
+                'labels': batch_labels
+            })
+            batch_datasets.append(batch_dataset)
+
+        print(f"{split_name} split: {total_chunks - filtered_chunks:,} chunks created from {num_examples:,} examples")
         print(f"  Filtered out {filtered_chunks:,}/{total_chunks:,} short chunks ({filtered_chunks/total_chunks*100:.1f}%)")
         print(f"  Min chunk length: {min_chunk_length} tokens")
+        print(f"  Created {len(batch_datasets)} batches")
 
-        # Create HuggingFace Dataset
-        return Dataset.from_dict({
-            'input_ids': all_input_ids,
-            'labels': all_labels
-        })
+        # Concatenate all batches and save
+        print(f"Concatenating batches and saving to {save_path}...")
+        from datasets import concatenate_datasets
+        final_dataset = concatenate_datasets(batch_datasets)
+        final_dataset.save_to_disk(save_path)
+        print(f"Saved {len(final_dataset):,} chunks to {save_path}")
+
+        return final_dataset
 
     # Process train and test splits (non-overlapping from same dataset)
-    train_dataset = process_split('train', num_train, num_train_to_skip=0)
-    test_dataset = process_split('validation', num_test, num_train_to_skip=num_train)
-
-    # Save to disk
     train_path = os.path.join(output_dir, 'train')
     test_path = os.path.join(output_dir, 'test')
 
-    print("\nSaving datasets to disk...")
-    train_dataset.save_to_disk(train_path)
-    test_dataset.save_to_disk(test_path)
+    try:
+        print("\n" + "="*50)
+        train_dataset = process_split('train', num_train, train_path, num_train_to_skip=0)
 
-    print(f"\nPreprocessing complete!")
+        print("\n" + "="*50)
+        test_dataset = process_split('validation', num_test, test_path, num_train_to_skip=num_train)
+
+    except Exception as e:
+        print(f"\n!!! ERROR OCCURRED: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+    print(f"\n{'='*50}")
+    print(f"Preprocessing complete!")
     print(f"Train dataset: {train_path}")
     print(f"Test dataset: {test_path}")
     print(f"\nDataset stats:")
@@ -178,9 +210,9 @@ def preprocess_dataset(
 if __name__ == "__main__":
     # Adjust these parameters as needed
     preprocess_dataset(
-        num_train=10_000,     
-        num_test=1_000,       # 10% of train
-        vocab_size=30_000,
+        num_train=150_000,     # 15x larger for ~1 hour epochs
+        num_test=15_000,       # 10% of train
+        vocab_size=20_000,     # Match model vocab_size in main.py
         chunk_size=512,
         overlap=50
     )
