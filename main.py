@@ -47,9 +47,9 @@ class HyperParameters:
     accumulation_steps: int = 4
     max_seq_len: int = 512
     test_size: float = 0.1
-    epochs: int = 10  
+    epochs: int = 25  
     lr: float = 6e-4  # Slightly increased from 3e-4, scheduler will handle warmup
-    checkpoint: bool = False
+    checkpoint: bool = True
     d_model: int = 512
     num_heads: int = 8
     dropout: float = 0.1
@@ -87,7 +87,9 @@ def train(
     checkpoint=False,
     start_epoch: int = 0,
     initial_model = None,
-    accumulation_steps: int = 1
+    accumulation_steps: int = 1,
+    optimizer = None,
+    scheduler = None
 ):
 
     # Simplified collate function for pre-tokenized data
@@ -172,20 +174,24 @@ def train(
     else:
         model = Transformer(vocab_size=vocab_size,mha_params=mha_params,N=N,block_dropout=0.2).to(device)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.1)
+    # Create optimizer and scheduler only if not provided (for resuming)
+    if optimizer is None:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.1)
+
     pad_id = tokenizer.token_to_id("[PAD]")
     criterion = nn.CrossEntropyLoss(ignore_index=pad_id)
 
-    # Add learning rate scheduler with warmup
-    num_training_steps = epochs * len(train_loader)
-    num_warmup_steps = int(0.1 * num_training_steps)  # 10% warmup
+    # Add learning rate scheduler with warmup (only if not provided)
+    if scheduler is None:
+        num_training_steps = epochs * len(train_loader)
+        num_warmup_steps = int(0.1 * num_training_steps)  # 10% warmup
 
-    def lr_lambda(current_step):
-        if current_step < num_warmup_steps:
-            return float(current_step) / float(max(1, num_warmup_steps))
-        return max(0.0, float(num_training_steps - current_step) / float(max(1, num_training_steps - num_warmup_steps)))
+        def lr_lambda(current_step):
+            if current_step < num_warmup_steps:
+                return float(current_step) / float(max(1, num_warmup_steps))
+            return max(0.0, float(num_training_steps - current_step) / float(max(1, num_training_steps - num_warmup_steps)))
 
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     os.makedirs('models/checkpoints',exist_ok=True)
     now = datetime.now()
 
@@ -246,7 +252,13 @@ def train(
         writer.add_scalar("AvgLoss/train", avg_loss, epoch)
         writer.add_scalar("LR", optimizer.param_groups[0]['lr'], epoch)
         if checkpoint:
-            torch.save(model.state_dict(), f"models/checkpoints/{now.year}_{now.month}_{now.day}_epoch_{epoch}.pt")
+            checkpoint_data = {
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'epoch': epoch
+            }
+            torch.save(checkpoint_data, f"models/checkpoints/{now.year}_{now.month}_{now.day}_epoch_{epoch}.pt")
         
         model.eval()
         total_val_loss = 0
@@ -365,8 +377,22 @@ def main():
     os.makedirs("models", exist_ok=True)
     os.makedirs("models/checkpoints", exist_ok=True)
 
+    # Load dataset info early (needed for scheduler calculation when resuming)
+    from datasets import load_from_disk
+    preprocessed_dir = "data/preprocessed"
+    train_path = f"{preprocessed_dir}/train"
+    if os.path.exists(train_path):
+        train_dataset_info = load_from_disk(train_path)
+        train_dataset_size = len(train_dataset_info)
+    else:
+        train_dataset_size = None  # Will use default if no dataset found
+
     start_epoch = 0
     model = Transformer(vocab_size=vocab_size, mha_params=mha_params, N=N, block_dropout=0.2).to(device)
+
+    # Initialize optimizer and scheduler (will be restored from checkpoint if resuming)
+    resumed_optimizer = None
+    resumed_scheduler = None
 
     if not os.path.exists(base_model_path):
         checkpoint_files = glob.glob("models/checkpoints/*_epoch_*.pt")
@@ -382,12 +408,44 @@ def main():
                 print(f"Resuming from checkpoint: {latest_checkpoint} (epoch {latest_epoch})")
 
                 if torch.cuda.is_available():
-                    state_dict = torch.load(latest_checkpoint, weights_only=True)
+                    checkpoint_data = torch.load(latest_checkpoint, weights_only=False)
                 else:
-                    state_dict = torch.load(latest_checkpoint, weights_only=True, map_location=torch.device('cpu'))
+                    checkpoint_data = torch.load(latest_checkpoint, weights_only=False, map_location=torch.device('cpu'))
 
-                state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
-                model.load_state_dict(state_dict)
+                # Handle both old (state_dict only) and new (dict with optimizer/scheduler) checkpoint formats
+                if isinstance(checkpoint_data, dict) and 'model_state_dict' in checkpoint_data:
+                    # New checkpoint format
+                    state_dict = checkpoint_data['model_state_dict']
+                    state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
+                    model.load_state_dict(state_dict)
+
+                    # Create optimizer and scheduler first, then load their state
+                    resumed_optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.1)
+
+                    # Create scheduler with same config (need dataset size for this)
+                    if train_dataset_size is not None:
+                        num_training_steps = epochs * (train_dataset_size // (batch_size * accumulation_steps))
+                        num_warmup_steps = int(0.1 * num_training_steps)
+
+                        def lr_lambda(current_step):
+                            if current_step < num_warmup_steps:
+                                return float(current_step) / float(max(1, num_warmup_steps))
+                            return max(0.0, float(num_training_steps - current_step) / float(max(1, num_training_steps - num_warmup_steps)))
+
+                        resumed_scheduler = torch.optim.lr_scheduler.LambdaLR(resumed_optimizer, lr_lambda)
+
+                        # Restore optimizer and scheduler state
+                        resumed_optimizer.load_state_dict(checkpoint_data['optimizer_state_dict'])
+                        resumed_scheduler.load_state_dict(checkpoint_data['scheduler_state_dict'])
+                        print(f"Restored optimizer and scheduler state (LR: {resumed_optimizer.param_groups[0]['lr']:.2e})")
+                    else:
+                        print("Warning: Could not calculate scheduler parameters without dataset. Optimizer and scheduler will restart.")
+                else:
+                    # Old checkpoint format (just state_dict)
+                    state_dict = {k.replace('_orig_mod.', ''): v for k, v in checkpoint_data.items()}
+                    model.load_state_dict(state_dict)
+                    print("Warning: Old checkpoint format detected. Optimizer and scheduler will restart.")
+
                 start_epoch = latest_epoch + 1
 
         if start_epoch < epochs:
@@ -409,7 +467,9 @@ def main():
                 checkpoint=checkpoint,
                 start_epoch=start_epoch,
                 initial_model=model,
-                accumulation_steps=accumulation_steps
+                accumulation_steps=accumulation_steps,
+                optimizer=resumed_optimizer,
+                scheduler=resumed_scheduler
             )
             if model is None:
                 print("Training failed. Model could not be created. Exiting.")
@@ -427,24 +487,22 @@ def main():
     
 
     print("Testing model...")
-    
+
     prompt = "The future of artificial intelligence is "
-    #input_ids = enc.encode(prompt)
     input_ids = tokenizer.encode(prompt).ids
 
-    #pad_id = enc.encode('<|endoftext|>', allowed_special={'<|endoftext|>'})[0]  # Get pad token ID
-
-    # Pad to max_seq_len
-    #input_ids = input_ids + [pad_id] * (max_seq_len - len(input_ids))
-    input_ids = input_ids + [tokenizer.token_to_id("[PAD]")] * (max_seq_len - len(input_ids))
-    input_ids = torch.tensor(input_ids, dtype=torch.long).unsqueeze(0).to(device)  # Shape: [1, 400]
-
-    generated_tokens = input_ids[0].tolist()  # Start with prompt tokens
-
+    # Don't pad during generation - only use actual tokens
+    generated_tokens = input_ids.copy()  # Start with prompt tokens
 
     with torch.no_grad():
         for _ in range(max_new_tokens):
-            logits = model(input_ids)[:, -1, :]
+            # Only pass the actual tokens (no padding)
+            input_tensor = torch.tensor([generated_tokens[-max_seq_len:]], dtype=torch.long).to(device)
+
+            # Get logits at the last position (which is now the last actual token)
+            logits = model(input_tensor)[:, -1, :]
+
+            # Mask out PAD token from being generated
             logits[:, tokenizer.token_to_id("[PAD]")] = float('-inf')
 
             logits = top_k_filtering(logits, top_k)
@@ -455,7 +513,6 @@ def main():
             next_token = next_token.item()
 
             generated_tokens.append(next_token)
-            input_ids = torch.tensor(generated_tokens[-max_seq_len:], dtype=torch.long).unsqueeze(0).to(device)
     
     #generated_text = enc.decode(generated_tokens)
     generated_text = tokenizer.decode(generated_tokens)
