@@ -105,7 +105,7 @@ def preprocess_dataset(
 
         dataset = dataset.take(num_examples)
 
-        min_chunk_length = int(0.6 * (chunk_size - 2))  # Require chunks to be at least 60% of max length
+        min_chunk_length = int(0.4 * (chunk_size - 2))  # Require chunks to be at least 60% of max length
         total_chunks = 0
         filtered_chunks = 0
 
@@ -210,8 +210,8 @@ def preprocess_dataset(
 if __name__ == "__main__":
     # Adjust these parameters as needed
     preprocess_dataset(
-        num_train=150_000,     # 15x larger for ~1 hour epochs
-        num_test=15_000,       # 10% of train
+        num_train=10_000,   #150_000,     # 15x larger for ~1 hour epochs
+        num_test=1_000,  #15_000,       # 10% of train
         vocab_size=20_000,     # Match model vocab_size in main.py
         chunk_size=512,
         overlap=50

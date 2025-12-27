@@ -47,15 +47,15 @@ class HyperParameters:
     accumulation_steps: int = 4
     max_seq_len: int = 512
     test_size: float = 0.1
-    epochs: int = 25  
+    epochs: int = 5  # Reduced from 20 to prevent overfitting
     lr: float = 6e-4  # Slightly increased from 3e-4, scheduler will handle warmup
-    checkpoint: bool = True
+    checkpoint: bool = False 
     d_model: int = 512
     num_heads: int = 8
-    dropout: float = 0.1
+    dropout: float = 0.2  # Increased from 0.1 to reduce overfitting
     vocab_size: int = 20_000
     max_new_tokens: int = 300
-    temperature: float = 0.8  
+    temperature: float = 0.8
     top_k: int = 50
     top_p: float = 0.95  
 
@@ -172,11 +172,11 @@ def train(
     if initial_model is not None:
         model = initial_model
     else:
-        model = Transformer(vocab_size=vocab_size,mha_params=mha_params,N=N,block_dropout=0.2).to(device)
+        model = Transformer(vocab_size=vocab_size,mha_params=mha_params,N=N,block_dropout=0.3).to(device)
 
     # Create optimizer and scheduler only if not provided (for resuming)
     if optimizer is None:
-        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.1)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.2)
 
     pad_id = tokenizer.token_to_id("[PAD]")
     criterion = nn.CrossEntropyLoss(ignore_index=pad_id)
@@ -388,7 +388,7 @@ def main():
         train_dataset_size = None  # Will use default if no dataset found
 
     start_epoch = 0
-    model = Transformer(vocab_size=vocab_size, mha_params=mha_params, N=N, block_dropout=0.2).to(device)
+    model = Transformer(vocab_size=vocab_size, mha_params=mha_params, N=N, block_dropout=0.3).to(device)
 
     # Initialize optimizer and scheduler (will be restored from checkpoint if resuming)
     resumed_optimizer = None
@@ -420,7 +420,7 @@ def main():
                     model.load_state_dict(state_dict)
 
                     # Create optimizer and scheduler first, then load their state
-                    resumed_optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.1)
+                    resumed_optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.2)
 
                     # Create scheduler with same config (need dataset size for this)
                     if train_dataset_size is not None:

@@ -9,6 +9,7 @@ wheels/
 # Virtual environments
 .venv
 
+debug_gen.py
 
 data/
 models/

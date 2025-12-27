@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch 
 import torch.nn as nn 
 from pos_encoding import RoPE
-
+from flash_attn import flash_attn_qkvpacked_func, flash_attn_func # first one after merging qkv.
 
 class MultiHeadAttention(nn.Module):
     """
@@ -60,29 +60,52 @@ class MultiHeadAttention(nn.Module):
         q_split = q_pos_encoded.reshape((batch_size,seq_len,self.h,self.head_dim))
         k_split = k_pos_encoded.reshape((batch_size,seq_len,self.h,self.head_dim))
         v_split = v_w.reshape((batch_size,seq_len,self.h,self.head_dim))
-        
+
+        # Start falsh attention 
+        # Flash attention test, everything else bellow is commented out.
+        # main objective here is to see how well flash attention performs
+        # Next optimization will be merging the qkv splits into one thing for better performance.
+        # See: https://github.com/Dao-AILab/flash-attention
+        #x = flash_attn_func(q_split, k_split, v_split, dropout_p=0.1, causal=True) # Causal true for auto regressive. 
+        #x = x.reshape((batch_size, seq_len, self.d_model))
+        #x = self.w_0(x)
+        #return x 
+        # End of flash attention 
+
+        # bellow is default code.
         # For compute efficiency, we are going to transpose h dimensions earlier
         # for parallelization
         q_split = q_split.transpose(1,2)
         k_split = k_split.transpose(1,2)
         v_split = v_split.transpose(1,2)
+        
+        # Start of scaled dot product 
+        # PyTorch's scaled_dot_product_attention automatically selects optimized kernels
+        # Uses memory-efficient attention on pre-Ampere GPUs
+        attention_qkv = nn.functional.scaled_dot_product_attention(
+        q_split, k_split, v_split,
+        dropout_p=0.1 if self.training else 0.0,
+        is_causal=True
+        )
+        # End of scaled dot attention test.
 
+        # Bellow is continuation of default code.
         # Since shape is 4D and transpose is 2D, we need to specify which dimensions to transpose
-        k_T = k_split.transpose(-2,-1)
+        #k_T = k_split.transpose(-2,-1)
 
         # Scaled Dot-Product Attention 
-        product = torch.matmul(q_split,k_T)
-        scaled_product = product / torch.sqrt(torch.tensor(self.head_dim,device=x.device))
+        #product = torch.matmul(q_split,k_T)
+        #scaled_product = product / torch.sqrt(torch.tensor(self.head_dim,device=x.device))
 
         # Masked self-attention
-        mask = torch.tril(torch.ones((seq_len, seq_len), device=x.device))
-        mask = mask.view(1, 1, seq_len, seq_len).expand(batch_size, self.h, seq_len, seq_len)
-        mask = mask.masked_fill(mask == 0, float('-inf'))
-        scaled_product = scaled_product + mask
+        #mask = torch.tril(torch.ones((seq_len, seq_len), device=x.device))
+        #mask = mask.view(1, 1, seq_len, seq_len).expand(batch_size, self.h, seq_len, seq_len)
+        #mask = mask.masked_fill(mask == 0, float('-inf'))
+        #scaled_product = scaled_product + mask
     
-        softmax_result = nn.functional.softmax(scaled_product,dim=-1)
-        softmax_result = self.dropout(softmax_result)
-        attention_qkv = torch.matmul(softmax_result,v_split)
+        #softmax_result = nn.functional.softmax(scaled_product,dim=-1)
+        #softmax_result = self.dropout(softmax_result)
+        #attention_qkv = torch.matmul(softmax_result,v_split)
 
         # Concatenate the last two dimensions back to d_model 
         concat_result = attention_qkv.transpose(1,2)
