@@ -209,10 +209,4 @@ def preprocess_dataset(
 
 if __name__ == "__main__":
     # Adjust these parameters as needed
-    preprocess_dataset(
-        num_train=10_000,   #150_000,     # 15x larger for ~1 hour epochs
-        num_test=1_000,  #15_000,       # 10% of train
-        vocab_size=20_000,     # Match model vocab_size in main.py
-        chunk_size=512,
-        overlap=50
-    )
+    preprocess_dataset()
