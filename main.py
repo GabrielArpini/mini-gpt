@@ -33,6 +33,8 @@ writer = SummaryWriter()
 from time import time
 
 
+from muon import Muon # Karpathy's nanochat muon implementation. 
+
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -61,13 +63,51 @@ class HyperParameters:
 
 def split_into_chunks(tokens, chunk_size=512, overlap=50):
     chunks = []
-    current = 0 
+    current = 0
     step = chunk_size - overlap
     while current < len(tokens):
         chunk = tokens[current: current + chunk_size]
         chunks.append(chunk)
-        current += step 
-    return chunks 
+        current += step
+    return chunks
+
+
+def split_params_for_optimizer(model):
+    """
+    Split model parameters into two groups:
+    - muon_params: 2D+ parameters from hidden layers (TransformerBlocks)
+    - adamw_params: Input embedding, output layer, and all 1D parameters (LayerNorms, biases)
+
+    According to Muon paper, Muon should only be used for 2D+ weight matrices,
+    not for embeddings, final layers, or LayerNorms.
+    """
+    muon_params = []
+    adamw_params = []
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+
+        # Embedding layer -> AdamW
+        if 'embedding' in name:
+            adamw_params.append(param)
+        # Final output layer -> AdamW
+        elif 'final_layer' in name:
+            adamw_params.append(param)
+        # LayerNorm parameters (1D) -> AdamW
+        elif 'norm' in name:
+            adamw_params.append(param)
+        # Biases (1D) -> AdamW
+        elif 'bias' in name:
+            adamw_params.append(param)
+        # 2D+ parameters in TransformerBlocks -> Muon
+        elif param.ndim >= 2:
+            muon_params.append(param)
+        # Any remaining 1D parameters -> AdamW
+        else:
+            adamw_params.append(param)
+
+    return muon_params, adamw_params 
   
 
 
@@ -174,14 +214,28 @@ def train(
     else:
         model = Transformer(vocab_size=vocab_size,mha_params=mha_params,N=N,block_dropout=0.3).to(device)
 
-    # Create optimizer and scheduler only if not provided (for resuming)
+    # Create optimizer and scheduler only if not provided
     if optimizer is None:
-        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.2)
+        # Split parameters for Muon and AdamW
+        muon_params, adamw_params = split_params_for_optimizer(model)
+
+        print(f"Optimizer split: {len(muon_params)} params for Muon, {len(adamw_params)} params for AdamW")
+
+        # Create both optimizers
+        # Muon for 2D+ weight matrices in transformer blocks
+        muon_optimizer = Muon(muon_params, lr=0.01, momentum=0.95)
+
+        # AdamW for embeddings, final layer, and 1D parameters
+        adamw_optimizer = torch.optim.AdamW(adamw_params, lr=lr, weight_decay=0.1)
+
+        # Store both in a dict for easier handling
+        optimizer = {'muon': muon_optimizer, 'adamw': adamw_optimizer}
 
     pad_id = tokenizer.token_to_id("[PAD]")
     criterion = nn.CrossEntropyLoss(ignore_index=pad_id)
 
     # Add learning rate scheduler with warmup (only if not provided)
+    # Scheduler only for AdamW (Muon has fixed LR)
     if scheduler is None:
         num_training_steps = epochs * len(train_loader)
         num_warmup_steps = int(0.1 * num_training_steps)  # 10% warmup
@@ -191,7 +245,9 @@ def train(
                 return float(current_step) / float(max(1, num_warmup_steps))
             return max(0.0, float(num_training_steps - current_step) / float(max(1, num_training_steps - num_warmup_steps)))
 
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        # Scheduler only applies to AdamW optimizer
+        adamw_opt = optimizer['adamw'] if isinstance(optimizer, dict) else optimizer
+        scheduler = torch.optim.lr_scheduler.LambdaLR(adamw_opt, lr_lambda)
     os.makedirs('models/checkpoints',exist_ok=True)
     now = datetime.now()
 
@@ -219,27 +275,66 @@ def train(
             scaler.scale(loss).backward()
 
             if (i + 1) % accumulation_steps == 0:
-                # Unscale gradients for clipping
-                scaler.unscale_(optimizer)
+                # Handle both optimizers
+                if isinstance(optimizer, dict):
+                    # Unscale gradients for clipping (both optimizers)
+                    scaler.unscale_(optimizer['muon'])
+                    scaler.unscale_(optimizer['adamw'])
 
-                # Calculate gradient norm before clipping
-                total_norm = 0
-                for p in model.parameters():
-                    if p.grad is not None:
-                        total_norm += p.grad.data.norm(2).item() ** 2
-                total_norm = total_norm ** 0.5
+                    # Calculate gradient norms separately for each optimizer
+                    muon_norm = 0
+                    adamw_norm = 0
 
-                # Clip gradients
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    # Get parameter lists for each optimizer
+                    muon_params_list = []
+                    adamw_params_list = []
+                    for name, p in model.named_parameters():
+                        if p.grad is None or not p.requires_grad:
+                            continue
+                        if 'embedding' in name or 'final_layer' in name or 'norm' in name or 'bias' in name or p.ndim < 2:
+                            adamw_params_list.append(p)
+                            adamw_norm += p.grad.data.norm(2).item() ** 2
+                        else:
+                            muon_params_list.append(p)
+                            muon_norm += p.grad.data.norm(2).item() ** 2
 
-                # Log gradient norm
-                global_step = epoch * len(train_loader) + i
-                writer.add_scalar("Gradients/norm", total_norm, global_step)
+                    muon_norm = muon_norm ** 0.5
+                    adamw_norm = adamw_norm ** 0.5
 
-                scaler.step(optimizer)
-                scaler.update()
-                scheduler.step()  # Update learning rate
-                optimizer.zero_grad()
+                    # Separate gradient clipping
+                    # Muon: no clipping (orthogonalization handles normalization)
+                    # AdamW: standard clipping
+                    torch.nn.utils.clip_grad_norm_(adamw_params_list, max_norm=1.0)
+
+                    # Log gradient norms separately
+                    global_step = epoch * len(train_loader) + i
+                    writer.add_scalar("Gradients/muon_norm", muon_norm, global_step)
+                    writer.add_scalar("Gradients/adamw_norm", adamw_norm, global_step)
+
+                    # Step both optimizers
+                    scaler.step(optimizer['muon'])
+                    scaler.step(optimizer['adamw'])
+                    scaler.update()
+                    scheduler.step()  # Update learning rate for AdamW only
+
+                    # Zero gradients for both
+                    optimizer['muon'].zero_grad()
+                    optimizer['adamw'].zero_grad()
+                else:
+                    # Fallback for old single optimizer
+                    scaler.unscale_(optimizer)
+                    total_norm = 0
+                    for p in model.parameters():
+                        if p.grad is not None:
+                            total_norm += p.grad.data.norm(2).item() ** 2
+                    total_norm = total_norm ** 0.5
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    global_step = epoch * len(train_loader) + i
+                    writer.add_scalar("Gradients/norm", total_norm, global_step)
+                    scaler.step(optimizer)
+                    scaler.update()
+                    scheduler.step()
+                    optimizer.zero_grad()
 
             total_loss += loss.item() * accumulation_steps
             num_batches += 1
@@ -250,14 +345,28 @@ def train(
                 writer.add_scalar("Loss/batch", loss.item() * accumulation_steps, global_step)
         avg_loss = total_loss / num_batches if num_batches > 0 else 0
         writer.add_scalar("AvgLoss/train", avg_loss, epoch)
-        writer.add_scalar("LR", optimizer.param_groups[0]['lr'], epoch)
+
+        # Log learning rates for both optimizers
+        if isinstance(optimizer, dict):
+            writer.add_scalar("LR/adamw", optimizer['adamw'].param_groups[0]['lr'], epoch)
+            writer.add_scalar("LR/muon", optimizer['muon'].param_groups[0]['lr'], epoch)
+        else:
+            writer.add_scalar("LR", optimizer.param_groups[0]['lr'], epoch)
         if checkpoint:
             checkpoint_data = {
                 'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
                 'epoch': epoch
             }
+
+            # Save optimizer state (handle both single and dual optimizer setup)
+            if isinstance(optimizer, dict):
+                checkpoint_data['muon_optimizer_state_dict'] = optimizer['muon'].state_dict()
+                checkpoint_data['adamw_optimizer_state_dict'] = optimizer['adamw'].state_dict()
+            else:
+                checkpoint_data['optimizer_state_dict'] = optimizer.state_dict()
+
+            checkpoint_data['scheduler_state_dict'] = scheduler.state_dict()
+
             torch.save(checkpoint_data, f"models/checkpoints/{now.year}_{now.month}_{now.day}_epoch_{epoch}.pt")
         
         model.eval()
@@ -419,8 +528,25 @@ def main():
                     state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
                     model.load_state_dict(state_dict)
 
-                    # Create optimizer and scheduler first, then load their state
-                    resumed_optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.2)
+                    # Create optimizers and scheduler first, then load their state
+                    # Check if checkpoint has dual optimizer setup (Muon + AdamW)
+                    if 'muon_optimizer_state_dict' in checkpoint_data and 'adamw_optimizer_state_dict' in checkpoint_data:
+                        # New dual optimizer setup
+                        muon_params, adamw_params = split_params_for_optimizer(model)
+                        muon_opt = Muon(muon_params, lr=0.01, momentum=0.95)
+                        adamw_opt = torch.optim.AdamW(adamw_params, lr=lr, weight_decay=0.1)
+                        resumed_optimizer = {'muon': muon_opt, 'adamw': adamw_opt}
+
+                        # Load optimizer states
+                        muon_opt.load_state_dict(checkpoint_data['muon_optimizer_state_dict'])
+                        adamw_opt.load_state_dict(checkpoint_data['adamw_optimizer_state_dict'])
+                        print(f"Restored Muon and AdamW optimizers (AdamW LR: {adamw_opt.param_groups[0]['lr']:.2e})")
+                    else:
+                        # Old single optimizer setup
+                        resumed_optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.1)
+                        if 'optimizer_state_dict' in checkpoint_data:
+                            resumed_optimizer.load_state_dict(checkpoint_data['optimizer_state_dict'])
+                            print(f"Restored single AdamW optimizer (LR: {resumed_optimizer.param_groups[0]['lr']:.2e})")
 
                     # Create scheduler with same config (need dataset size for this)
                     if train_dataset_size is not None:
@@ -432,12 +558,14 @@ def main():
                                 return float(current_step) / float(max(1, num_warmup_steps))
                             return max(0.0, float(num_training_steps - current_step) / float(max(1, num_training_steps - num_warmup_steps)))
 
-                        resumed_scheduler = torch.optim.lr_scheduler.LambdaLR(resumed_optimizer, lr_lambda)
+                        # Scheduler applies to AdamW optimizer
+                        adamw_for_scheduler = resumed_optimizer['adamw'] if isinstance(resumed_optimizer, dict) else resumed_optimizer
+                        resumed_scheduler = torch.optim.lr_scheduler.LambdaLR(adamw_for_scheduler, lr_lambda)
 
-                        # Restore optimizer and scheduler state
-                        resumed_optimizer.load_state_dict(checkpoint_data['optimizer_state_dict'])
-                        resumed_scheduler.load_state_dict(checkpoint_data['scheduler_state_dict'])
-                        print(f"Restored optimizer and scheduler state (LR: {resumed_optimizer.param_groups[0]['lr']:.2e})")
+                        # Restore scheduler state
+                        if 'scheduler_state_dict' in checkpoint_data:
+                            resumed_scheduler.load_state_dict(checkpoint_data['scheduler_state_dict'])
+                            print(f"Restored scheduler state")
                     else:
                         print("Warning: Could not calculate scheduler parameters without dataset. Optimizer and scheduler will restart.")
                 else:
