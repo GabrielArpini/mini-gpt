@@ -19,7 +19,6 @@ class RoPE(nn.Module):
         super(RoPE,self).__init__()
         self.d_model = d_model
         self.max_seq_len = max_seq_len
-        print(d_model)
         assert d_model % 2 == 0, "d_model must be divisible by 2"
 
         
