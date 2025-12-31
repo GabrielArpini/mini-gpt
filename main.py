@@ -24,6 +24,8 @@ from datetime import datetime
 import torch
 import torch.nn.functional as F
 from torch.amp import autocast, GradScaler
+from torch.profiler import profile, ProfilerActivity, record_function
+
 import glob
 import re
 
@@ -31,7 +33,7 @@ from torch.utils.tensorboard import SummaryWriter
 writer = SummaryWriter()
 
 from time import time
-
+from contextlib import nullcontext
 
 from muon import Muon # Karpathy's nanochat muon implementation. 
 
@@ -49,17 +51,21 @@ class HyperParameters:
     accumulation_steps: int = 4
     max_seq_len: int = 512
     test_size: float = 0.1
-    epochs: int = 5  # Reduced from 20 to prevent overfitting
+    epochs: int = 3  # Reduced from 20 to prevent overfitting
     lr: float = 6e-4  # Slightly increased from 3e-4, scheduler will handle warmup
-    checkpoint: bool = False 
+    checkpoint: bool = True
     d_model: int = 512
     num_heads: int = 8
-    dropout: float = 0.2  # Increased from 0.1 to reduce overfitting
+    dropout: float = 0.3  # Increased to prevent degenerate repetition patterns
     vocab_size: int = 20_000
     max_new_tokens: int = 300
-    temperature: float = 0.8
+    temperature: float = 1.5
     top_k: int = 50
-    top_p: float = 0.95  
+    top_p: float = 0.9
+    penalty_factor: float = 1.6
+    window_size: int = 30
+    prompt: str = "Once upon a time there was a"
+    enable_profiler: bool = False  # Profiling can slow down training significantly
 
 def split_into_chunks(tokens, chunk_size=512, overlap=50):
     chunks = []
@@ -124,12 +130,13 @@ def train(
     test_size = 0.1,
     epochs: int = 10,
     lr=1e-4,
-    checkpoint=False,
+    checkpoint=True,
     start_epoch: int = 0,
     initial_model = None,
     accumulation_steps: int = 1,
     optimizer = None,
-    scheduler = None
+    scheduler = None,
+    enable_profiler: bool = False
 ):
 
     # Simplified collate function for pre-tokenized data
@@ -229,10 +236,13 @@ def train(
         adamw_optimizer = torch.optim.AdamW(adamw_params, lr=lr, weight_decay=0.1)
 
         # Store both in a dict for easier handling
-        optimizer = {'muon': muon_optimizer, 'adamw': adamw_optimizer}
+        optimizer = {'muon': muon_optimizer, 'adamw': adamw_optimizer,
+                     'muon_params': muon_params, 'adamw_params': adamw_params}
 
     pad_id = tokenizer.token_to_id("[PAD]")
-    criterion = nn.CrossEntropyLoss(ignore_index=pad_id)
+    # Add label_smoothing to prevent overconfident predictions that lead to repetition
+    # 0.1 means: true label gets 90% probability mass, other tokens share 10%
+    criterion = nn.CrossEntropyLoss(ignore_index=pad_id, label_smoothing=0.1)
 
     # Add learning rate scheduler with warmup (only if not provided)
     # Scheduler only for AdamW (Muon has fixed LR)
@@ -257,6 +267,21 @@ def train(
     # Start timing total training
     training_start_time = time()
 
+    # Setup profiler for training (profile first epoch only) - optional
+    prof = None
+    if enable_profiler:
+        prof = profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True,
+            on_trace_ready=lambda p: p.export_chrome_trace("training_trace.json")
+        )
+
+    # Helper function to conditionally use record_function or nullcontext
+    def profiler_context(name):
+        return record_function(name) if enable_profiler else nullcontext()
+
     for epoch in range(start_epoch, epochs):
         # Start timing this epoch
         epoch_start_time = time()
@@ -264,77 +289,78 @@ def train(
         model.train()
         total_loss = 0
         num_batches = 0
+
+        # Start profiling on first epoch (if enabled)
+        if enable_profiler and epoch == start_epoch:
+            prof.start()
+
         for i, batch in enumerate(train_loader):
-            with autocast('cuda'):
+            with profiler_context("## Data Loading"):
                 input_ids = batch['input_ids'].to(device)
                 target_labels = batch['labels'].to(device)
-                y_pred = model(input_ids)
-                loss = criterion(y_pred.view(-1, y_pred.size(-1)), target_labels.view(-1))
-                loss = loss / accumulation_steps
 
-            scaler.scale(loss).backward()
+            with profiler_context("## Forward Pass"):
+                with autocast('cuda'):
+                    y_pred = model(input_ids)
+                    loss = criterion(y_pred.view(-1, y_pred.size(-1)), target_labels.view(-1))
+                    loss = loss / accumulation_steps
+
+            with profiler_context("## Backward Pass"):
+                scaler.scale(loss).backward()
+
+            # Stop profiling after 15 batches (if enabled)
+            if enable_profiler and epoch == start_epoch and i == 15:
+                prof.stop()
+                print("Training profiling complete. Saved to 'training_trace.json'")
 
             if (i + 1) % accumulation_steps == 0:
-                # Handle both optimizers
-                if isinstance(optimizer, dict):
-                    # Unscale gradients for clipping (both optimizers)
-                    scaler.unscale_(optimizer['muon'])
-                    scaler.unscale_(optimizer['adamw'])
+                with profiler_context("## Optimizer Step"):
+                    # Handle both optimizers
+                    if isinstance(optimizer, dict):
+                        # Unscale gradients for clipping (both optimizers)
+                        scaler.unscale_(optimizer['muon'])
+                        scaler.unscale_(optimizer['adamw'])
 
-                    # Calculate gradient norms separately for each optimizer
-                    muon_norm = 0
-                    adamw_norm = 0
+                        # Use pre-computed parameter lists (no need to rebuild every step!)
+                        muon_params_list = optimizer['muon_params']
+                        adamw_params_list = optimizer['adamw_params']
 
-                    # Get parameter lists for each optimizer
-                    muon_params_list = []
-                    adamw_params_list = []
-                    for name, p in model.named_parameters():
-                        if p.grad is None or not p.requires_grad:
-                            continue
-                        if 'embedding' in name or 'final_layer' in name or 'norm' in name or 'bias' in name or p.ndim < 2:
-                            adamw_params_list.append(p)
-                            adamw_norm += p.grad.data.norm(2).item() ** 2
-                        else:
-                            muon_params_list.append(p)
-                            muon_norm += p.grad.data.norm(2).item() ** 2
+                        # Calculate gradient norms efficiently (single GPU operation per optimizer)
+                        # Muon: compute norm without clipping (orthogonalization handles normalization)
+                        muon_norm = torch.nn.utils.clip_grad_norm_(muon_params_list, float('inf'))
 
-                    muon_norm = muon_norm ** 0.5
-                    adamw_norm = adamw_norm ** 0.5
+                        # AdamW: compute norm AND clip to max_norm=1.0 in one call
+                        adamw_norm = torch.nn.utils.clip_grad_norm_(adamw_params_list, max_norm=1.0)
 
-                    # Separate gradient clipping
-                    # Muon: no clipping (orthogonalization handles normalization)
-                    # AdamW: standard clipping
-                    torch.nn.utils.clip_grad_norm_(adamw_params_list, max_norm=1.0)
+                        # Log gradient norms separately
+                        global_step = epoch * len(train_loader) + i
+                        writer.add_scalar("Gradients/muon_norm", muon_norm.item(), global_step)
+                        writer.add_scalar("Gradients/adamw_norm", adamw_norm.item(), global_step)
 
-                    # Log gradient norms separately
-                    global_step = epoch * len(train_loader) + i
-                    writer.add_scalar("Gradients/muon_norm", muon_norm, global_step)
-                    writer.add_scalar("Gradients/adamw_norm", adamw_norm, global_step)
+                        # Step both optimizers
+                        scaler.step(optimizer['muon'])
+                        scaler.step(optimizer['adamw'])
+                        scaler.update()
+                        scheduler.step()  # Update learning rate for AdamW only
 
-                    # Step both optimizers
-                    scaler.step(optimizer['muon'])
-                    scaler.step(optimizer['adamw'])
-                    scaler.update()
-                    scheduler.step()  # Update learning rate for AdamW only
-
-                    # Zero gradients for both
-                    optimizer['muon'].zero_grad()
-                    optimizer['adamw'].zero_grad()
-                else:
-                    # Fallback for old single optimizer
-                    scaler.unscale_(optimizer)
-                    total_norm = 0
-                    for p in model.parameters():
-                        if p.grad is not None:
-                            total_norm += p.grad.data.norm(2).item() ** 2
-                    total_norm = total_norm ** 0.5
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    global_step = epoch * len(train_loader) + i
-                    writer.add_scalar("Gradients/norm", total_norm, global_step)
-                    scaler.step(optimizer)
-                    scaler.update()
-                    scheduler.step()
-                    optimizer.zero_grad()
+                        # Zero gradients for both
+                        optimizer['muon'].zero_grad()
+                        optimizer['adamw'].zero_grad()
+                    else:
+                        # Fallback for old single optimizer
+                        scaler.unscale_(optimizer)
+                        total_norm = 0
+                        for p in model.parameters():
+                            if p.grad is not None:
+                                total_norm += p.grad.data.norm(2).item() ** 2
+                        total_norm = total_norm ** 0.5
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        global_step = epoch * len(train_loader) + i
+                        writer.add_scalar("Gradients/norm", total_norm, global_step)
+                        scaler.step(optimizer)
+                        scaler.update()
+                        scheduler.step()
+                        optimizer.zero_grad()
 
             total_loss += loss.item() * accumulation_steps
             num_batches += 1
@@ -427,6 +453,31 @@ def top_p_filtering(logits, top_p):
         logits = logits.masked_fill(indices_to_remove, float('-inf'))
     return logits
 
+def apply_ngram_penalty(logits, generated_tokens, window_size=20, penalty_factor=1.2):
+    """
+    Apply n-gram penalty: P'(x_i) = P(x_i) / penalty_factor if x_i in last w tokens
+
+    Args:
+        logits: Model logits before softmax
+        generated_tokens: List of previously generated token IDs
+        window_size: Look back w tokens
+        penalty_factor: Penalty strength (> 1.0 reduces probability of repeated tokens)
+    """
+    if len(generated_tokens) == 0 or penalty_factor == 1.0:
+        return logits
+
+    # Get tokens in the window
+    window = generated_tokens[-window_size:] if len(generated_tokens) > window_size else generated_tokens
+
+    # Apply penalty by subtracting log(penalty_factor) from logits
+    # This is equivalent to dividing probabilities by penalty_factor
+    penalty = torch.log(torch.tensor(penalty_factor, device=logits.device))
+
+    for token_id in set(window):
+        logits[0, token_id] = logits[0, token_id] - penalty
+
+    return logits
+
 def main():
 
     hp = HyperParameters()
@@ -446,19 +497,21 @@ def main():
     temperature = hp.temperature
     top_k = hp.top_k
     top_p = hp.top_p
+    penalty_factor = hp.penalty_factor
+    window_size = hp.window_size
+    prompt = hp.prompt
+    enable_profiler = hp.enable_profiler
 
-
-    merges_path = 'data/merges.json'
     vocab_path = 'data/vocab.json'
     os.makedirs('data', exist_ok=True)
 
     # Initialize Hugging Face tokenizers BPE
-    
+
 
     tokenizer = Tokenizer(BPE(unk_token="[UNK]"))
     tokenizer.pre_tokenizer = Whitespace()
     special_tokens = ["[PAD]", "[BOS]", "[EOS]", "[UNK]"]
-    if not os.path.exists(merges_path) or not os.path.exists(vocab_path):
+    if not os.path.exists(vocab_path):
         iterator = DatasetIterator()
         print("Starting tokenizer training...")
         trainer = BpeTrainer(vocab_size=vocab_size, special_tokens=special_tokens)
@@ -535,7 +588,8 @@ def main():
                         muon_params, adamw_params = split_params_for_optimizer(model)
                         muon_opt = Muon(muon_params, lr=0.01, momentum=0.95)
                         adamw_opt = torch.optim.AdamW(adamw_params, lr=lr, weight_decay=0.1)
-                        resumed_optimizer = {'muon': muon_opt, 'adamw': adamw_opt}
+                        resumed_optimizer = {'muon': muon_opt, 'adamw': adamw_opt,
+                                           'muon_params': muon_params, 'adamw_params': adamw_params}
 
                         # Load optimizer states
                         muon_opt.load_state_dict(checkpoint_data['muon_optimizer_state_dict'])
@@ -597,7 +651,8 @@ def main():
                 initial_model=model,
                 accumulation_steps=accumulation_steps,
                 optimizer=resumed_optimizer,
-                scheduler=resumed_scheduler
+                scheduler=resumed_scheduler,
+                enable_profiler=enable_profiler
             )
             if model is None:
                 print("Training failed. Model could not be created. Exiting.")
@@ -616,11 +671,12 @@ def main():
 
     print("Testing model...")
 
-    prompt = "The future of artificial intelligence is "
     input_ids = tokenizer.encode(prompt).ids
 
     # Don't pad during generation - only use actual tokens
     generated_tokens = input_ids.copy()  # Start with prompt tokens
+
+    eos_token_id = tokenizer.token_to_id("[EOS]")
 
     with torch.no_grad():
         for _ in range(max_new_tokens):
@@ -633,6 +689,9 @@ def main():
             # Mask out PAD token from being generated
             logits[:, tokenizer.token_to_id("[PAD]")] = float('-inf')
 
+            # Apply n-gram penalty to reduce repetition
+            logits = apply_ngram_penalty(logits, generated_tokens, window_size=window_size, penalty_factor=penalty_factor)
+
             logits = top_k_filtering(logits, top_k)
             logits = top_p_filtering(logits, top_p)
             probs = temperature_sampling(logits, temperature=temperature)
@@ -641,6 +700,10 @@ def main():
             next_token = next_token.item()
 
             generated_tokens.append(next_token)
+
+            # Stop if EOS token is generated
+            if next_token == eos_token_id:
+                break
     
     #generated_text = enc.decode(generated_tokens)
     generated_text = tokenizer.decode(generated_tokens)
