@@ -29,8 +29,7 @@ from torch.profiler import profile, ProfilerActivity, record_function
 import glob
 import re
 
-from torch.utils.tensorboard import SummaryWriter
-writer = SummaryWriter()
+import wandb
 
 from time import time
 from contextlib import nullcontext
@@ -261,6 +260,23 @@ def train(
     os.makedirs('models/checkpoints',exist_ok=True)
     now = datetime.now()
 
+    # Initialize wandb
+    wandb.init(
+        project="mini-gpt",
+        config={
+            "N": N,
+            "batch_size": batch_size,
+            "accumulation_steps": accumulation_steps,
+            "max_seq_len": max_seq_len,
+            "epochs": epochs,
+            "lr": lr,
+            "vocab_size": vocab_size,
+            "d_model": mha_params.get('d_model'),
+            "num_heads": mha_params.get('h'),
+            "dropout": mha_params.get('dropout'),
+        }
+    )
+
     scaler = GradScaler('cuda')
     print("First run will take a bit longer...")
 
@@ -334,8 +350,11 @@ def train(
 
                         # Log gradient norms separately
                         global_step = epoch * len(train_loader) + i
-                        writer.add_scalar("Gradients/muon_norm", muon_norm.item(), global_step)
-                        writer.add_scalar("Gradients/adamw_norm", adamw_norm.item(), global_step)
+                        wandb.log({
+                            "gradients/muon_norm": muon_norm.item(),
+                            "gradients/adamw_norm": adamw_norm.item(),
+                            "global_step": global_step
+                        })
 
                         # Step both optimizers
                         scaler.step(optimizer['muon'])
@@ -356,7 +375,7 @@ def train(
                         total_norm = total_norm ** 0.5
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                         global_step = epoch * len(train_loader) + i
-                        writer.add_scalar("Gradients/norm", total_norm, global_step)
+                        wandb.log({"gradients/norm": total_norm, "global_step": global_step})
                         scaler.step(optimizer)
                         scaler.update()
                         scheduler.step()
@@ -368,16 +387,23 @@ def train(
             # Log batch-level loss every 100 batches
             if i % 100 == 0:
                 global_step = epoch * len(train_loader) + i
-                writer.add_scalar("Loss/batch", loss.item() * accumulation_steps, global_step)
+                wandb.log({"loss/batch": loss.item() * accumulation_steps, "global_step": global_step})
         avg_loss = total_loss / num_batches if num_batches > 0 else 0
-        writer.add_scalar("AvgLoss/train", avg_loss, epoch)
 
         # Log learning rates for both optimizers
         if isinstance(optimizer, dict):
-            writer.add_scalar("LR/adamw", optimizer['adamw'].param_groups[0]['lr'], epoch)
-            writer.add_scalar("LR/muon", optimizer['muon'].param_groups[0]['lr'], epoch)
+            wandb.log({
+                "loss/train_avg": avg_loss,
+                "lr/adamw": optimizer['adamw'].param_groups[0]['lr'],
+                "lr/muon": optimizer['muon'].param_groups[0]['lr'],
+                "epoch": epoch
+            })
         else:
-            writer.add_scalar("LR", optimizer.param_groups[0]['lr'], epoch)
+            wandb.log({
+                "loss/train_avg": avg_loss,
+                "lr": optimizer.param_groups[0]['lr'],
+                "epoch": epoch
+            })
         if checkpoint:
             checkpoint_data = {
                 'model_state_dict': model.state_dict(),
@@ -407,24 +433,30 @@ def train(
                 total_val_loss += loss.item()
                 num_val_batches += 1
         avg_val_loss = total_val_loss / num_val_batches if num_val_batches > 0 else 0
-        writer.add_scalar("AvgValLoss/val", avg_val_loss, epoch)
         perplexity = torch.exp(torch.tensor(avg_val_loss)).item()
-        writer.add_scalar("Perplexity", perplexity, epoch)
 
         # Calculate and log epoch time
         epoch_time_minutes = (time() - epoch_start_time) / 60
-        writer.add_scalar("Time/epoch_minutes", epoch_time_minutes, epoch)
+
+        wandb.log({
+            "loss/val_avg": avg_val_loss,
+            "perplexity": perplexity,
+            "time/epoch_minutes": epoch_time_minutes,
+            "epoch": epoch
+        })
 
         print(f"Epoch: {epoch+1}, AVG loss: {avg_loss:.4f} AVG Val loss: {avg_val_loss} Perplexity: {perplexity} Time: {epoch_time_minutes:.2f}m")
 
     # Calculate and log total training time
     total_training_minutes = (time() - training_start_time) / 60
-    writer.add_scalar("Time/total_training_minutes", total_training_minutes, epochs - 1)
+    wandb.log({
+        "time/total_training_minutes": total_training_minutes,
+        "time/total_training_hours": total_training_minutes / 60
+    })
 
     print(f"\nTotal training time: {total_training_minutes:.2f} minutes ({total_training_minutes/60:.2f} hours)")
 
-    writer.close()
-    writer.flush()
+    wandb.finish()
     return model
 
 
