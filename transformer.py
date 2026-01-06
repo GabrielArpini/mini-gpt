@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from MultiHeadAttention import MultiHeadAttention
 from pos_encoding import RoPE
+from rmsnorm import RMSNorm
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -42,15 +43,16 @@ class TransformerBlock(nn.Module):
         """
         super(TransformerBlock,self).__init__()
         self.mha = mha
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
+        self.norm1 = RMSNorm(d_model)
+        self.norm2 = RMSNorm(d_model)
 
         self.ff = SwiGLU(d_model, 4*d_model)
         self.dropout = nn.Dropout(dropout) 
         
     
     def forward(self,x):
-        x = x + self.mha(self.norm1(x))
+        # Apply dropout to both attention and feedforward paths
+        x = x + self.dropout(self.mha(self.norm1(x)))
         x = x + self.dropout(self.ff(self.norm2(x)))
         return x 
 
@@ -73,7 +75,7 @@ class Transformer(nn.Module):
             for _ in range(N)])
 
         self.final_layer = nn.Sequential(
-            nn.LayerNorm(self.d_model),
+            RMSNorm(self.d_model),
             nn.Linear(self.d_model,vocab_size)
         ).to(device)
     def forward(self, x):
