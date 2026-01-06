@@ -39,17 +39,27 @@ class RoPE(nn.Module):
         Applies rotary positional embeddings to the input tensor.
 
         Args:
-        x:  Input tensor of shape (batch_size, seq_len, d_model), where
+        x:  Input tensor of shape (batch_size, seq_len, d_model) or
+            (batch_size, seq_len, num_heads, head_dim), where
             batch_size is the number of sequences, seq_len is the sequence length,
-            and d_model is the embedding dimension.
+            and d_model/head_dim is the embedding dimension.
 
         Returns:
             torch.Tensor: Rotated embeddings with the same shape as the input.
         """
+        original_shape = x.shape
 
-        batch_size,seq_len,_ = x.shape 
-        if seq_len > self.max_seq_len:
-            raise ValueError(f"Input sequence length {seq_len} exceeds max_seq_len {self.max_seq_len}")
+        # Handle both 3D (batch, seq, d_model) and 4D (batch, seq, heads, head_dim)
+        if len(original_shape) == 4:
+            batch_size, seq_len, num_heads, head_dim = original_shape
+            # Reshape to (batch*heads, seq, head_dim) for processing
+            x = x.reshape(batch_size * num_heads, seq_len, head_dim)
+        else:
+            batch_size, seq_len, _ = original_shape
+
+        seq_len_actual = x.shape[1]
+        if seq_len_actual > self.max_seq_len:
+            raise ValueError(f"Input sequence length {seq_len_actual} exceeds max_seq_len {self.max_seq_len}")
 
         # Need to extract the even and odd dimensions from d_model.
         x_even = x[:,:,0::2]
@@ -58,19 +68,24 @@ class RoPE(nn.Module):
         # Angle grid was made with max_seq_len size, so we need to account that before
         # Since sin and cos have shape (seq_len, d_model // 2)
         # and x have batch_size, we need to unsqueeze sin and cos
-        sin_reduced = self.sin_angles[:seq_len,:].unsqueeze(0)
-        cos_reduced = self.cos_angles[:seq_len,:].unsqueeze(0)
+        sin_reduced = self.sin_angles[:seq_len_actual,:].unsqueeze(0)
+        cos_reduced = self.cos_angles[:seq_len_actual,:].unsqueeze(0)
 
         # Apply rotations
         x_even_rotated = x_even*cos_reduced - x_odd*sin_reduced
         x_odd_rotated = x_even*sin_reduced + x_odd*cos_reduced
-        
+
         # Using concatenation will not recreate original structure
         # it will have all even numbers then all odd numbers
         # we need them interleaved.
         #
         x = torch.stack((x_even_rotated,x_odd_rotated), dim=-1)
-        x = x.view(batch_size,seq_len, -1)
+        x = x.view(*x.shape[:2], -1)
+
+        # Reshape back to original shape if it was 4D
+        if len(original_shape) == 4:
+            x = x.reshape(original_shape)
+
         return x
 
 
