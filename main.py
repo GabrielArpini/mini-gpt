@@ -46,7 +46,7 @@ os.environ['TOKENIZERS_PARALLELISM'] = 'false'  # Disable tokenizers parallelism
 @dataclass
 class HyperParameters:
     N: int = 8
-    batch_size: int = 8
+    batch_size: int = 10
     accumulation_steps: int = 4
     max_seq_len: int = 512
     test_size: float = 0.1
@@ -63,8 +63,8 @@ class HyperParameters:
     top_p: float = 0.9
     penalty_factor: float = 1.6
     window_size: int = 30
-    prompt: str = "Once upon a time there was a"
-    enable_profiler: bool = False  # Profiling can slow down training significantly
+    prompt: str = "Aqui no Brasil, as pessoas costumam "
+    enable_profiler: bool = True  # Profiling can slow down training significantly
 
 def split_into_chunks(tokens, chunk_size=512, overlap=50):
     chunks = []
@@ -738,7 +738,7 @@ def main():
                 break
     
     #generated_text = enc.decode(generated_tokens)
-    generated_text = tokenizer.decode(generated_tokens)
+    generated_text = tokenizer.decode(generated_tokens).replace(" ,", ",").replace(" .", ".")
     print(f"Generated text: {generated_text}")
 
    
