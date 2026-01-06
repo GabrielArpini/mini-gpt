@@ -9,6 +9,7 @@ class MultiHeadAttention(nn.Module):
     """
     Computes attention using q,k,v (query,key,value) in a multi head 
     fashion by splitting the input into multiple heads.
+    Adapted for MQA (Multi-Query Attention), simplifying thq k,v computation.
 
     """
     def __init__(self, d_model:int, h: int, max_seq_len: int, dropout: float = 0.0) -> None:
@@ -31,12 +32,18 @@ class MultiHeadAttention(nn.Module):
 
         # q,k,v are represented with linear projections
         self.q_proj = nn.Linear(d_model,d_model)
-        self.k_proj = nn.Linear(d_model,d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model,self.head_dim)
+        self.v_proj = nn.Linear(d_model, self.head_dim)
         self.w_0 = nn.Linear(d_model,d_model) # Output after the whole process. 
         
-        # Instantiate RoPE 
-        self.rope = RoPE(d_model=self.d_model,max_seq_len=max_seq_len)
+        # Instantiate RoPE
+        self.rope = RoPE(d_model=self.head_dim, max_seq_len=max_seq_len)
+
+        # Create causal mask once and register as buffer (not a parameter)
+        # Shape: (1, 1, max_seq_len, max_seq_len) - broadcasts to any batch size and num heads
+        mask = torch.tril(torch.ones((1, 1, max_seq_len, max_seq_len)))
+        mask = mask.masked_fill(mask == 0, float('-inf'))
+        self.register_buffer('causal_mask', mask)
 
         
         
@@ -50,16 +57,16 @@ class MultiHeadAttention(nn.Module):
         k_w = self.k_proj(x)
         v_w = self.v_proj(x)
 
-        # Embed positons into q,k  
-        q_pos_encoded = self.rope(q_w)
-        k_pos_encoded = self.rope(k_w)
-        
         # Split q,k,v d_model into shape:
         # (batch_size,seq_len, num_heads, head_dim)
         batch_size, seq_len, _ = x.shape
-        q_split = q_pos_encoded.reshape((batch_size,seq_len,self.h,self.head_dim))
-        k_split = k_pos_encoded.reshape((batch_size,seq_len,self.h,self.head_dim))
-        v_split = v_w.reshape((batch_size,seq_len,self.h,self.head_dim))
+        q_split = q_w.reshape((batch_size,seq_len,self.h,self.head_dim))
+        k_split = k_w.reshape((batch_size,seq_len,1,self.head_dim))
+        v_split = v_w.reshape((batch_size,seq_len,1,self.head_dim))
+
+        # Apply RoPE to q and k AFTER splitting into heads
+        q_split = self.rope(q_split)
+        k_split = self.rope(k_split)
 
         # Start falsh attention 
         # Flash attention test, everything else bellow is commented out.
@@ -78,34 +85,31 @@ class MultiHeadAttention(nn.Module):
         q_split = q_split.transpose(1,2)
         k_split = k_split.transpose(1,2)
         v_split = v_split.transpose(1,2)
-        
-        # Start of scaled dot product 
-        # PyTorch's scaled_dot_product_attention automatically selects optimized kernels
-        # Uses memory-efficient attention on pre-Ampere GPUs
-        attention_qkv = nn.functional.scaled_dot_product_attention(
-        q_split, k_split, v_split,
-        dropout_p=0.1 if self.training else 0.0,
-        is_causal=True
-        )
-        # End of scaled dot attention test.
 
-        # Bellow is continuation of default code.
+        # MQA: matmul handles broadcasting efficiently for k,v with shape (batch, 1, seq, head_dim)
         # Since shape is 4D and transpose is 2D, we need to specify which dimensions to transpose
-        #k_T = k_split.transpose(-2,-1)
+        k_T = k_split.transpose(-2,-1)
 
-        # Scaled Dot-Product Attention 
-        #product = torch.matmul(q_split,k_T)
-        #scaled_product = product / torch.sqrt(torch.tensor(self.head_dim,device=x.device))
+        # Scaled Dot-Product Attention
+        product = torch.matmul(q_split,k_T)
+        scaled_product = product / torch.sqrt(torch.tensor(self.head_dim,device=x.device))
 
-        # Masked self-attention
-        #mask = torch.tril(torch.ones((seq_len, seq_len), device=x.device))
-        #mask = mask.view(1, 1, seq_len, seq_len).expand(batch_size, self.h, seq_len, seq_len)
-        #mask = mask.masked_fill(mask == 0, float('-inf'))
-        #scaled_product = scaled_product + mask
-    
-        #softmax_result = nn.functional.softmax(scaled_product,dim=-1)
-        #softmax_result = self.dropout(softmax_result)
-        #attention_qkv = torch.matmul(softmax_result,v_split)
+        # Masked self-attention - use pre-created mask, slice to current seq_len
+        # Shape: (1, 1, seq_len, seq_len) broadcasts to (batch, h, seq_len, seq_len)
+        scaled_product = scaled_product + self.causal_mask[:, :, :seq_len, :seq_len]
+
+        softmax_result = nn.functional.softmax(scaled_product,dim=-1)
+        softmax_result = self.dropout(softmax_result)
+        attention_qkv = torch.matmul(softmax_result,v_split)
+
+        # PyTorch SDPA (commented out - backend selection unpredictable for MQA)
+        #k_split = k_split.expand(batch_size, self.h, seq_len, self.head_dim)
+        #v_split = v_split.expand(batch_size, self.h, seq_len, self.head_dim)
+        #attention_qkv = nn.functional.scaled_dot_product_attention(
+        #q_split, k_split, v_split,
+        #dropout_p=0.1 if self.training else 0.0,
+        #is_causal=True
+        #)
 
         # Concatenate the last two dimensions back to d_model 
         concat_result = attention_qkv.transpose(1,2)
