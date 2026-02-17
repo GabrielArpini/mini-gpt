@@ -15,3 +15,7 @@ data/
 models/
 runs/
 wandb/
+
+# Profiler traces
+trace.json
+training_trace.json
