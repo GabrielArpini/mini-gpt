@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import torch 
-import torch.nn as nn 
-from pos_encoding import RoPE
+import torch
+import torch.nn as nn
+from mini_gpt.model.rope import RoPE
 from flash_attn import flash_attn_qkvpacked_func, flash_attn_func # first one after merging qkv.
 
 class MultiHeadAttention(nn.Module):
     """
-    Computes attention using q,k,v (query,key,value) in a multi head 
+    Computes attention using q,k,v (query,key,value) in a multi head
     fashion by splitting the input into multiple heads.
     Adapted for MQA (Multi-Query Attention), simplifying thq k,v computation.
 
@@ -19,14 +19,14 @@ class MultiHeadAttention(nn.Module):
         h (int): number of heads.
         dropout (float): A percentage value of chance to randomly zeroes elements
         in the input tensor. Default is 0.0.
-        max_seq_len (int): The maximum length of the sequence. 
+        max_seq_len (int): The maximum length of the sequence.
 
         """
 
         super(MultiHeadAttention,self).__init__()
         self.d_model = d_model
-        self.h = h 
-        self.head_dim = d_model // h 
+        self.h = h
+        self.head_dim = d_model // h
         self.dropout = nn.Dropout(dropout)
         self.max_seq_len = max_seq_len
 
@@ -34,8 +34,8 @@ class MultiHeadAttention(nn.Module):
         self.q_proj = nn.Linear(d_model,d_model)
         self.k_proj = nn.Linear(d_model,self.head_dim)
         self.v_proj = nn.Linear(d_model, self.head_dim)
-        self.w_0 = nn.Linear(d_model,d_model) # Output after the whole process. 
-        
+        self.w_0 = nn.Linear(d_model,d_model) # Output after the whole process.
+
         # Instantiate RoPE
         self.rope = RoPE(d_model=self.head_dim, max_seq_len=max_seq_len)
 
@@ -45,8 +45,8 @@ class MultiHeadAttention(nn.Module):
         mask = mask.masked_fill(mask == 0, float('-inf'))
         self.register_buffer('causal_mask', mask)
 
-        
-        
+
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -68,16 +68,16 @@ class MultiHeadAttention(nn.Module):
         q_split = self.rope(q_split)
         k_split = self.rope(k_split)
 
-        # Start falsh attention 
+        # Start falsh attention
         # Flash attention test, everything else bellow is commented out.
         # main objective here is to see how well flash attention performs
         # Next optimization will be merging the qkv splits into one thing for better performance.
         # See: https://github.com/Dao-AILab/flash-attention
-        #x = flash_attn_func(q_split, k_split, v_split, dropout_p=0.1, causal=True) # Causal true for auto regressive. 
+        #x = flash_attn_func(q_split, k_split, v_split, dropout_p=0.1, causal=True) # Causal true for auto regressive.
         #x = x.reshape((batch_size, seq_len, self.d_model))
         #x = self.w_0(x)
-        #return x 
-        # End of flash attention 
+        #return x
+        # End of flash attention
 
         # bellow is default code.
         # For compute efficiency, we are going to transpose h dimensions earlier
@@ -111,15 +111,11 @@ class MultiHeadAttention(nn.Module):
         #is_causal=True
         #)
 
-        # Concatenate the last two dimensions back to d_model 
+        # Concatenate the last two dimensions back to d_model
         concat_result = attention_qkv.transpose(1,2)
         concat_result = concat_result.reshape((concat_result.shape[0],concat_result.shape[1],concat_result.shape[2]*concat_result.shape[3]))
-        
-        # Pass concat result into final projection. 
+
+        # Pass concat result into final projection.
         x = self.w_0(concat_result)
 
         return x
-
-
-
-

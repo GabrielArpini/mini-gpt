@@ -3,9 +3,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from MultiHeadAttention import MultiHeadAttention
-from pos_encoding import RoPE
-from rmsnorm import RMSNorm
+from mini_gpt.model.attention import MultiHeadAttention
+from mini_gpt.model.rmsnorm import RMSNorm
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -47,14 +46,14 @@ class TransformerBlock(nn.Module):
         self.norm2 = RMSNorm(d_model)
 
         self.ff = SwiGLU(d_model, 4*d_model)
-        self.dropout = nn.Dropout(dropout) 
-        
-    
+        self.dropout = nn.Dropout(dropout)
+
+
     def forward(self,x):
         # Apply dropout to both attention and feedforward paths
         x = x + self.dropout(self.mha(self.norm1(x)))
         x = x + self.dropout(self.ff(self.norm2(x)))
-        return x 
+        return x
 
 class Transformer(nn.Module):
     def __init__(self, vocab_size:int, mha_params: dict, N: int = 8, block_dropout: float = 0.0):
@@ -63,7 +62,7 @@ class Transformer(nn.Module):
             N: number of times to iterate TransformerBlock.
             vocab_size: The size of the vocabulary.
             mha_params: parameters for MultiHeadAttention, it will be unpacked so careful with name.
-            block_dropout: dropout to ble applied in TransformerBlock. 
+            block_dropout: dropout to ble applied in TransformerBlock.
         """
         super(Transformer,self).__init__()
         self.d_model = mha_params['d_model']
@@ -71,7 +70,7 @@ class Transformer(nn.Module):
 
 
         self.blocklist = nn.ModuleList([
-            TransformerBlock(MultiHeadAttention(**mha_params),self.d_model, block_dropout).to(device) 
+            TransformerBlock(MultiHeadAttention(**mha_params),self.d_model, block_dropout).to(device)
             for _ in range(N)])
 
         self.final_layer = nn.Sequential(
@@ -79,10 +78,8 @@ class Transformer(nn.Module):
             nn.Linear(self.d_model,vocab_size)
         ).to(device)
     def forward(self, x):
-        x = self.embedding(x).clone() # Fix torch.compile error 
+        x = self.embedding(x).clone() # Fix torch.compile error
         for block in self.blocklist:
             x = block(x)
         x = self.final_layer(x)
         return x
-
-

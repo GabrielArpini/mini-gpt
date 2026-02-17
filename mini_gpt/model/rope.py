@@ -1,6 +1,6 @@
 import torch
-import torch.nn as nn 
-import matplotlib.pyplot as plt 
+import torch.nn as nn
+import matplotlib.pyplot as plt
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -21,7 +21,7 @@ class RoPE(nn.Module):
         self.max_seq_len = max_seq_len
         assert d_model % 2 == 0, "d_model must be divisible by 2"
 
-        
+
         pos_indices_vec = torch.arange(max_seq_len).unsqueeze(1) # shape [max_seq_len,1]
 
         d_dimensions_space = torch.arange(0, d_model , 2) # shape [d_model // 2],d even numbers. Since it jumps 2 in 2 the shape is d//2
@@ -98,12 +98,3 @@ class RoPE(nn.Module):
         plt.title(title)
         plt.legend()
         plt.show()
-            
-
-        
-
-        
-
-
-
-
