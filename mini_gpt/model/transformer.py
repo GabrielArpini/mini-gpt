@@ -49,11 +49,18 @@ class TransformerBlock(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
 
-    def forward(self,x):
+    def forward(self,x, kv_cache=None, start_pos=0, use_cache=False):
         # Apply dropout to both attention and feedforward paths
-        x = x + self.dropout(self.mha(self.norm1(x)))
+        if use_cache:
+            mha_norm, kv_cache = self.mha(self.norm1(x), start_pos=start_pos, kv_cache=kv_cache)
+        else:
+            mha_norm, _ = self.mha(self.norm1(x))
+        x = x + self.dropout(mha_norm)
         x = x + self.dropout(self.ff(self.norm2(x)))
-        return x
+        if use_cache:
+            return x,kv_cache 
+        else:
+            return x 
 
 class Transformer(nn.Module):
     def __init__(self, vocab_size:int, mha_params: dict, N: int = 8, block_dropout: float = 0.0):
@@ -77,9 +84,27 @@ class Transformer(nn.Module):
             RMSNorm(self.d_model),
             nn.Linear(self.d_model,vocab_size)
         ).to(device)
-    def forward(self, x):
+
+    def forward(self, x, prev_caches=None, start_pos=0, use_cache=False):
         x = self.embedding(x).clone() # Fix torch.compile error
-        for block in self.blocklist:
-            x = block(x)
+        
+        if prev_caches and use_cache:
+            caches = []
+            for i,block in enumerate(self.blocklist):
+                x, cache = block(x, kv_cache=prev_caches[i], start_pos=start_pos, use_cache=use_cache)
+                caches.append(cache)
+
+        else:
+            caches = []
+            for block in self.blocklist:
+                if use_cache:
+                    x, cache = block(x, use_cache=use_cache) # pos will be 0 anyways, so no need to pass param. 
+                    caches.append(cache)
+                else:
+                    x = block(x)
+
         x = self.final_layer(x)
-        return x
+        
+        if use_cache:
+            return x, caches
+        return x 

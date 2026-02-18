@@ -26,6 +26,7 @@ class MultiHeadAttention(nn.Module):
         super(MultiHeadAttention,self).__init__()
         self.d_model = d_model
         self.h = h
+        assert d_model % h == 0, f"d_model ({d_model}) must be divisible by h ({h})"
         self.head_dim = d_model // h
         self.dropout = nn.Dropout(dropout)
         self.max_seq_len = max_seq_len
@@ -47,7 +48,7 @@ class MultiHeadAttention(nn.Module):
 
 
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, start_pos:int = 0, kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None) -> torch.Tensor:
         """
         Args:
         x: Tensor of the tokenized list of shape (batch_size,seq_len, d_model)
@@ -64,9 +65,9 @@ class MultiHeadAttention(nn.Module):
         k_split = k_w.reshape((batch_size,seq_len,1,self.head_dim))
         v_split = v_w.reshape((batch_size,seq_len,1,self.head_dim))
 
-        # Apply RoPE to q and k AFTER splitting into heads
-        q_split = self.rope(q_split)
-        k_split = self.rope(k_split)
+        # Apply RoPE to q and k after splitting into heads
+        q_split = self.rope(q_split, start_pos)
+        k_split = self.rope(k_split, start_pos)
 
         # Start falsh attention
         # Flash attention test, everything else bellow is commented out.
@@ -85,10 +86,19 @@ class MultiHeadAttention(nn.Module):
         q_split = q_split.transpose(1,2)
         k_split = k_split.transpose(1,2)
         v_split = v_split.transpose(1,2)
+        prefill = True 
+        if kv_cache is None:
+            kv_cache = [k_split,v_split]
+            k_full, v_full = k_split, v_split
+        else:
+            prefill = False 
+            k_full = torch.cat([kv_cache[0], k_split], dim=2)
+            v_full = torch.cat([kv_cache[1], v_split], dim=2)
+
 
         # MQA: matmul handles broadcasting efficiently for k,v with shape (batch, 1, seq, head_dim)
         # Since shape is 4D and transpose is 2D, we need to specify which dimensions to transpose
-        k_T = k_split.transpose(-2,-1)
+        k_T = k_full.transpose(-2,-1)
 
         # Scaled Dot-Product Attention
         product = torch.matmul(q_split,k_T)
@@ -96,11 +106,12 @@ class MultiHeadAttention(nn.Module):
 
         # Masked self-attention - use pre-created mask, slice to current seq_len
         # Shape: (1, 1, seq_len, seq_len) broadcasts to (batch, h, seq_len, seq_len)
-        scaled_product = scaled_product + self.causal_mask[:, :, :seq_len, :seq_len]
+        if prefill:
+            scaled_product = scaled_product + self.causal_mask[:, :, :seq_len, :seq_len]
 
         softmax_result = nn.functional.softmax(scaled_product,dim=-1)
         softmax_result = self.dropout(softmax_result)
-        attention_qkv = torch.matmul(softmax_result,v_split)
+        attention_qkv = torch.matmul(softmax_result,v_full)
 
         # PyTorch SDPA (commented out - backend selection unpredictable for MQA)
         #k_split = k_split.expand(batch_size, self.h, seq_len, self.head_dim)
@@ -118,4 +129,4 @@ class MultiHeadAttention(nn.Module):
         # Pass concat result into final projection.
         x = self.w_0(concat_result)
 
-        return x
+        return x, kv_cache

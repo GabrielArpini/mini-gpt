@@ -34,7 +34,7 @@ class RoPE(nn.Module):
         self.register_buffer('sin_angles', torch.sin(angle_grid))
         self.register_buffer('cos_angles', torch.cos(angle_grid))
 
-    def forward(self,x):
+    def forward(self,x, start_pos: int = 0):
         """
         Applies rotary positional embeddings to the input tensor.
 
@@ -68,8 +68,8 @@ class RoPE(nn.Module):
         # Angle grid was made with max_seq_len size, so we need to account that before
         # Since sin and cos have shape (seq_len, d_model // 2)
         # and x have batch_size, we need to unsqueeze sin and cos
-        sin_reduced = self.sin_angles[:seq_len_actual,:].unsqueeze(0)
-        cos_reduced = self.cos_angles[:seq_len_actual,:].unsqueeze(0)
+        sin_reduced = self.sin_angles[start_pos:start_pos + seq_len_actual,:].unsqueeze(0)
+        cos_reduced = self.cos_angles[start_pos:start_pos + seq_len_actual,:].unsqueeze(0)
 
         # Apply rotations
         x_even_rotated = x_even*cos_reduced - x_odd*sin_reduced
