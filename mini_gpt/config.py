@@ -15,11 +15,14 @@ class HyperParameters:
     num_heads: int = 8
     dropout: float = 0.3  # Increased to prevent degenerate repetition patterns
     vocab_size: int = 20_000
+    enable_profiler: bool = False  # Profiling can slow down training significantly
+
+@dataclass 
+class SamplingParameters:
     max_new_tokens: int = 300
     temperature: float = 1.5
     top_k: int = 50
     top_p: float = 0.9
     penalty_factor: float = 1.6
     window_size: int = 30
-    prompt: str = "Aqui no Brasil, as pessoas costumam "
-    enable_profiler: bool = True  # Profiling can slow down training significantly
+

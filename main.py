@@ -11,17 +11,12 @@ from tokenizers.models import BPE
 from tokenizers.trainers import BpeTrainer
 from tokenizers.pre_tokenizers import Whitespace
 
-from mini_gpt.config import HyperParameters
+from mini_gpt.config import HyperParameters, SamplingParameters
 from mini_gpt.model import Transformer
 from mini_gpt.data import DatasetIterator
 from mini_gpt.optim import Muon
 from mini_gpt.train import train, split_params_for_optimizer
-from mini_gpt.generate import (
-    temperature_sampling,
-    top_k_filtering,
-    top_p_filtering,
-    apply_ngram_penalty,
-)
+from mini_gpt.inference.engine import Engine 
 
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -29,7 +24,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'  # Disable tokenizers parallelism to avoid fork issues
 
-
+prompt = 'Hello my name is '
 def main():
 
     hp = HyperParameters()
@@ -45,13 +40,6 @@ def main():
     epochs = hp.epochs
     checkpoint = hp.checkpoint
     vocab_size = hp.vocab_size
-    max_new_tokens = hp.max_new_tokens
-    temperature = hp.temperature
-    top_k = hp.top_k
-    top_p = hp.top_p
-    penalty_factor = hp.penalty_factor
-    window_size = hp.window_size
-    prompt = hp.prompt
     enable_profiler = hp.enable_profiler
 
     vocab_path = 'data/vocab.json'
@@ -221,45 +209,10 @@ def main():
 
 
     print("Testing model...")
-
-    input_ids = tokenizer.encode(prompt).ids
-
-    # Don't pad during generation - only use actual tokens
-    generated_tokens = input_ids.copy()  # Start with prompt tokens
-
-    eos_token_id = tokenizer.token_to_id("[EOS]")
-
-    with torch.no_grad():
-        for _ in range(max_new_tokens):
-            # Only pass the actual tokens (no padding)
-            input_tensor = torch.tensor([generated_tokens[-max_seq_len:]], dtype=torch.long).to(device)
-
-            # Get logits at the last position (which is now the last actual token)
-            logits = model(input_tensor)[:, -1, :]
-
-            # Mask out PAD token from being generated
-            logits[:, tokenizer.token_to_id("[PAD]")] = float('-inf')
-
-            # Apply n-gram penalty to reduce repetition
-            logits = apply_ngram_penalty(logits, generated_tokens, window_size=window_size, penalty_factor=penalty_factor)
-
-            logits = top_k_filtering(logits, top_k)
-            logits = top_p_filtering(logits, top_p)
-            probs = temperature_sampling(logits, temperature=temperature)
-
-            next_token = torch.multinomial(probs, num_samples=1)
-            next_token = next_token.item()
-
-            generated_tokens.append(next_token)
-
-            # Stop if EOS token is generated
-            if next_token == eos_token_id:
-                break
-
-    generated_text = tokenizer.decode(generated_tokens).replace(" ,", ",").replace(" .", ".")
-    print(f"Generated text: {generated_text}")
-
-
+    inference_engine = Engine(model, tokenizer, max_seq_len)
+    sampling_parameters = SamplingParameters()
+    generated_text = inference_engine.generate(prompt, sampling_parameters)
+    print(generated_text)
 
 if __name__ == "__main__":
     main()
