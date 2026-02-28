@@ -1,48 +1,86 @@
 # mini-gpt
 
-A GPT-style language model built from scratch in PyTorch.
+A decoder-only transformer built from scratch in PyTorch — no shortcuts, no wrappers. Every component implemented and understood from first principles.
+
+---
 
 ## Architecture
 
-Decoder-only transformer with the following components:
+```
+Input Tokens
+     │
+     ▼
+┌─────────────┐
+│  Embedding  │
+└─────────────┘
+     │
+     ▼
+┌─────────────────────────────────┐
+│         Transformer Block × N   │
+│                                 │
+│  ┌──────────────────────────┐   │
+│  │  RMSNorm                 │   │
+│  │  Multi-Query Attention   │   │
+│  │  + RoPE + KV Cache       │   │
+│  └──────────────────────────┘   │
+│             +  (residual)       │
+│  ┌──────────────────────────┐   │
+│  │  RMSNorm                 │   │
+│  │  SwiGLU FFN              │   │
+│  └──────────────────────────┘   │
+│             +  (residual)       │
+└─────────────────────────────────┘
+     │
+     ▼
+┌─────────────┐
+│  RMSNorm    │
+│  Linear     │
+└─────────────┘
+     │
+     ▼
+  Logits
+```
 
-- **Rotary Position Embeddings (RoPE)** for relative position encoding
-- **Multi-Query Attention (MQA)** for efficient inference (single K/V head, multiple Q heads)
-- **SwiGLU** feed-forward network
-- **RMSNorm** instead of LayerNorm
-- **Muon optimizer** (momentum orthogonalized by Newton-Schulz) for 2D+ weight matrices, paired with AdamW for embeddings and normalization layers
-- Mixed-precision training with gradient accumulation
-- Linear warmup + cosine decay learning rate schedule
+**Key design choices:**
+
+| Component | Choice | Why |
+|-----------|--------|-----|
+| Positional encoding | RoPE | Relative positions, extrapolates to longer sequences |
+| Attention | Multi-Query (MQA) | Single K/V head — memory efficient, fast inference |
+| Normalization | RMSNorm | Simpler than LayerNorm, no mean centering overhead |
+| Activation | SwiGLU | Gated activation, better gradient flow than ReLU/GELU |
+| Optimizer | Muon + AdamW | Muon for 2D+ weights, AdamW for embeddings and norms |
+| Inference | KV Cache | Prefill + decode phases — no recomputation of past tokens |
+
+---
 
 ## Project Structure
 
 ```
 mini-gpt/
-├── mini_gpt/                    # Package
-│   ├── __init__.py
+├── mini_gpt/
+│   ├── config.py                # HyperParameters and SamplingParameters
+│   ├── tokenizer.py             # Custom BPE tokenizer (reference implementation)
+│   ├── train.py                 # Training loop: mixed precision, grad accumulation, WandB
 │   ├── model/
-│   │   ├── __init__.py
 │   │   ├── transformer.py       # Transformer, TransformerBlock, SwiGLU
-│   │   ├── attention.py         # MultiHeadAttention (MQA)
+│   │   ├── attention.py         # MultiHeadAttention (MQA) with KV cache
 │   │   ├── rope.py              # Rotary Position Embeddings
 │   │   └── rmsnorm.py           # RMSNorm
-│   ├── optim/
-│   │   ├── __init__.py
-│   │   └── muon.py              # Muon optimizer
 │   ├── data/
-│   │   ├── __init__.py
-│   │   ├── dataset.py           # DatasetIterator for tokenizer training
-│   │   └── preprocess.py        # Dataset preprocessing pipeline
-│   ├── tokenizer.py             # Custom BPE tokenizer (reference implementation)
-│   ├── config.py                # HyperParameters dataclass
-│   ├── generate.py              # Sampling: top-k, top-p, temperature, n-gram penalty
-│   └── train.py                 # Training loop with wandb logging
+│   │   ├── dataset.py           # Streaming dataset iterator
+│   │   └── preprocess.py        # Tokenization and chunking pipeline
+│   ├── optim/
+│   │   └── muon.py              # Muon optimizer
+│   └── inference/
+│       ├── engine.py            # Generation engine (prefill + decode with KV cache)
+│       └── sampling.py          # top-k, top-p, temperature, n-gram penalty
 ├── scripts/
-│   └── inspect_params.py        # Debug utility: inspect model parameter split
-├── main.py                      # Entry point
-├── pyproject.toml
-└── .gitignore
+│   └── inspect_params.py        # Inspect Muon vs AdamW parameter split
+└── main.py                      # Entry point
 ```
+
+---
 
 ## Setup
 
@@ -52,43 +90,37 @@ Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 uv sync
 ```
 
+---
+
 ## Usage
 
-### 1. Preprocess the dataset
-
-Downloads and tokenizes FineWeb-Edu into chunked training/test splits:
-
+**1. Preprocess** — downloads FineWeb-Edu and tokenizes into chunked splits:
 ```bash
 uv run python -m mini_gpt.data.preprocess
 ```
 
-### 2. Train
-
-Trains the model with checkpoint saving and wandb logging:
-
+**2. Train** — resumes automatically from the latest checkpoint if one exists:
 ```bash
 uv run python main.py
 ```
 
-Training automatically resumes from the latest checkpoint if one exists.
+**3. Generate** — runs after training or with an existing `models/base_model.pt`.
 
-### 3. Generate
+---
 
-After training completes (or a `models/base_model.pt` exists), `main.py` generates text from the prompt configured in `mini_gpt/config.py`.
-
-## Key Hyperparameters
+## Hyperparameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `N` | 8 | Number of transformer blocks |
+| `N` | 8 | Transformer blocks |
 | `d_model` | 512 | Embedding dimension |
-| `num_heads` | 8 | Number of query heads (MQA) |
+| `num_heads` | 8 | Query heads (MQA: 1 K/V head) |
 | `max_seq_len` | 512 | Maximum sequence length |
 | `batch_size` | 10 | Batch size |
 | `accumulation_steps` | 4 | Gradient accumulation steps |
-| `lr` | 6e-4 | AdamW learning rate |
+| `lr` | 6e-4 | Learning rate |
 | `epochs` | 3 | Training epochs |
 | `dropout` | 0.3 | Dropout rate |
 | `vocab_size` | 20,000 | BPE vocabulary size |
 
-See `mini_gpt/config.py` for the full list including generation parameters (temperature, top-k, top-p, n-gram penalty).
+Generation parameters (temperature, top-k, top-p, n-gram penalty) are in `SamplingParameters` inside `mini_gpt/config.py`.
