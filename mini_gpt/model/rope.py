@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import matplotlib.pyplot as plt
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -16,7 +15,7 @@ class RoPE(nn.Module):
         base: The base to compute theta.
 
         """
-        super(RoPE,self).__init__()
+        super().__init__()
         self.d_model = d_model
         self.max_seq_len = max_seq_len
         assert d_model % 2 == 0, "d_model must be divisible by 2"
@@ -91,6 +90,7 @@ class RoPE(nn.Module):
 
     @staticmethod
     def plot(sin_angles, cos_angles, dim_idx=0, title="RoPE Sin/Cos Values"):
+        import matplotlib.pyplot as plt
         plt.plot(sin_angles[:, dim_idx], label="sin")
         plt.plot(cos_angles[:, dim_idx], label="cos")
         plt.xlabel("Position")

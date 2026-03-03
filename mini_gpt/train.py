@@ -20,17 +20,6 @@ from mini_gpt.optim import Muon
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def split_into_chunks(tokens, chunk_size=512, overlap=50):
-    chunks = []
-    current = 0
-    step = chunk_size - overlap
-    while current < len(tokens):
-        chunk = tokens[current: current + chunk_size]
-        chunks.append(chunk)
-        current += step
-    return chunks
-
-
 def split_params_for_optimizer(model):
     """
     Split model parameters into two groups:

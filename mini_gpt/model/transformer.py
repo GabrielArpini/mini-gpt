@@ -40,7 +40,7 @@ class TransformerBlock(nn.Module):
             d_model: embedding dimension, default 128.
             dropout: percentage of dropout, default 0.
         """
-        super(TransformerBlock,self).__init__()
+        super().__init__()
         self.mha = mha
         self.norm1 = RMSNorm(d_model)
         self.norm2 = RMSNorm(d_model)
@@ -71,7 +71,7 @@ class Transformer(nn.Module):
             mha_params: parameters for MultiHeadAttention, it will be unpacked so careful with name.
             block_dropout: dropout to ble applied in TransformerBlock.
         """
-        super(Transformer,self).__init__()
+        super().__init__()
         self.d_model = mha_params['d_model']
         self.embedding = nn.Embedding(vocab_size, self.d_model).to(device)
 

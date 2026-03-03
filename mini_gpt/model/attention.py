@@ -3,7 +3,6 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 from mini_gpt.model.rope import RoPE
-from flash_attn import flash_attn_qkvpacked_func, flash_attn_func # first one after merging qkv.
 
 class MultiHeadAttention(nn.Module):
     """
@@ -23,7 +22,7 @@ class MultiHeadAttention(nn.Module):
 
         """
 
-        super(MultiHeadAttention,self).__init__()
+        super().__init__()
         self.d_model = d_model
         self.h = h
         assert d_model % h == 0, f"d_model ({d_model}) must be divisible by h ({h})"
@@ -69,18 +68,6 @@ class MultiHeadAttention(nn.Module):
         q_split = self.rope(q_split, start_pos)
         k_split = self.rope(k_split, start_pos)
 
-        # Start falsh attention
-        # Flash attention test, everything else bellow is commented out.
-        # main objective here is to see how well flash attention performs
-        # Next optimization will be merging the qkv splits into one thing for better performance.
-        # See: https://github.com/Dao-AILab/flash-attention
-        #x = flash_attn_func(q_split, k_split, v_split, dropout_p=0.1, causal=True) # Causal true for auto regressive.
-        #x = x.reshape((batch_size, seq_len, self.d_model))
-        #x = self.w_0(x)
-        #return x
-        # End of flash attention
-
-        # bellow is default code.
         # For compute efficiency, we are going to transpose h dimensions earlier
         # for parallelization
         q_split = q_split.transpose(1,2)
@@ -112,15 +99,6 @@ class MultiHeadAttention(nn.Module):
         softmax_result = nn.functional.softmax(scaled_product,dim=-1)
         softmax_result = self.dropout(softmax_result)
         attention_qkv = torch.matmul(softmax_result,v_full)
-
-        # PyTorch SDPA (commented out - backend selection unpredictable for MQA)
-        #k_split = k_split.expand(batch_size, self.h, seq_len, self.head_dim)
-        #v_split = v_split.expand(batch_size, self.h, seq_len, self.head_dim)
-        #attention_qkv = nn.functional.scaled_dot_product_attention(
-        #q_split, k_split, v_split,
-        #dropout_p=0.1 if self.training else 0.0,
-        #is_causal=True
-        #)
 
         # Concatenate the last two dimensions back to d_model
         concat_result = attention_qkv.transpose(1,2)
