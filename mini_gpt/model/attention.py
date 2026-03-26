@@ -4,6 +4,12 @@ import torch
 import torch.nn as nn
 from mini_gpt.model.rope import RoPE
 
+try:
+    from flash_attn import flash_attn_qkvpacked_func, flash_attn_func # first one after merging qkv.
+except ImportError:
+    flash_attn_qkvpacked_func = None
+    flash_attn_func = None
+
 class MultiHeadAttention(nn.Module):
     """
     Computes attention using q,k,v (query,key,value) in a multi head
