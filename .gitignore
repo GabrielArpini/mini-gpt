@@ -11,7 +11,7 @@ wheels/
 
 debug_gen.py
 
-data/
+/data/
 models/
 runs/
 wandb/
