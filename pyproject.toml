@@ -20,4 +20,5 @@ dependencies = [
     "tokenizers>=0.22.1",
     "torch>=2.8.0",
     "wandb>=0.23.1",
+    "scipy>=1.12.0",
 ]
